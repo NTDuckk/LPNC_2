@@ -436,5 +436,6 @@ class PromptLearner(nn.Module):
 def build_model(args, num_classes=11003):
     model = LPNC(args, num_classes)
     # covert model to fp16
-    convert_weights(model)
+    if not getattr(args, 'fp16', False):
+        convert_weights(model)
     return model
