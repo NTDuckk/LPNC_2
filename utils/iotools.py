@@ -32,25 +32,19 @@ def read_image(img_path):
 
 
 def mkdir_if_missing(directory):
-    if directory == '':
-        return
-    try:
-        os.makedirs(directory)
-    except OSError as e:
-        if e.errno != errno.EEXIST:
-            raise
+    if not osp.exists(directory):
+        try:
+            os.makedirs(directory)
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
 
 
-def load_pickle(fpath):
-    with open(fpath, 'rb') as f:
-        obj = pkl.load(f)
-    return obj
-
-
-def save_pickle(obj, fpath):
-    mkdir_if_missing(osp.dirname(fpath))
-    with open(fpath, 'wb') as f:
-        pkl.dump(obj, f, protocol=pkl.HIGHEST_PROTOCOL)
+def check_isfile(path):
+    isfile = osp.isfile(path)
+    if not isfile:
+        print("=> Warning: no file found at '{}' (ignored)".format(path))
+    return isfile
 
 
 def read_json(fpath):
@@ -65,30 +59,16 @@ def write_json(obj, fpath):
         json.dump(obj, f, indent=4, separators=(',', ': '))
 
 
+def get_text_embedding(path, length):
+    with open(path, 'rb') as f:
+        word_frequency = pkl.load(f)
+
+
 def save_train_configs(path, args):
-    """DDP-safe save configs.
-
-    - Avoid race condition when multiple ranks create the same folder.
-    - Only rank 0 writes configs.yaml.
-    - If distributed is initialized, synchronize with a barrier.
-    """
-    import torch
-
-    # Always make sure directory exists (exist_ok avoids FileExistsError race)
-    os.makedirs(path, exist_ok=True)
-
-    # Determine rank robustly (works even if process group not initialized yet)
-    rank = int(os.environ.get("RANK", "0"))
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        rank = torch.distributed.get_rank()
-
-    if rank == 0:
-        with open(os.path.join(path, "configs.yaml"), "w") as f:
-            yaml.dump(vars(args), f, default_flow_style=False)
-
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        torch.distributed.barrier()
-
+    if not os.path.exists(path):
+        os.makedirs(path)
+    with open(f'{path}/configs.yaml', 'w') as f:
+        yaml.dump(vars(args), f, default_flow_style=False)
 
 def load_train_configs(path):
     with open(path, 'r') as f:

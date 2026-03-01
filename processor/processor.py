@@ -2,6 +2,7 @@ import logging
 import os
 import time
 import torch
+from contextlib import nullcontext
 from utils.meter import AverageMeter
 from utils.metrics import Evaluator
 from utils.comm import get_rank, synchronize
@@ -48,15 +49,19 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
         for n_iter, batch in enumerate(train_loader):
             batch = {k: v.to(device) for k, v in batch.items()}
             index = batch['index']
-            ret = model(batch)
-            total_loss = sum([v for k, v in ret.items() if "loss" in k])
-            total_loss = total_loss / accum_steps  # scale loss for accumulation
-            batch_size = batch['images'].shape[0]
-            meters['loss'].update(total_loss.item() * accum_steps, batch_size)
-            meters['supid_loss'].update(ret.get('supid_loss', 0), batch_size)
-            meters['cotrl_loss'].update(ret.get('cotrl_loss', 0), batch_size)
-            meters['cid_loss'].update(ret.get('cid_loss', 0), batch_size)
-            total_loss.backward()
+            # Skip DDP gradient sync during accumulation steps (sync only on last step)
+            is_accumulating = (n_iter + 1) % accum_steps != 0
+            sync_context = model.no_sync if (args.distributed and is_accumulating) else nullcontext
+            with sync_context():
+                ret = model(batch)
+                total_loss = sum([v for k, v in ret.items() if "loss" in k])
+                total_loss = total_loss / accum_steps  # scale loss for accumulation
+                batch_size = batch['images'].shape[0]
+                meters['loss'].update(total_loss.item() * accum_steps, batch_size)
+                meters['supid_loss'].update(ret.get('supid_loss', 0), batch_size)
+                meters['cotrl_loss'].update(ret.get('cotrl_loss', 0), batch_size)
+                meters['cid_loss'].update(ret.get('cid_loss', 0), batch_size)
+                total_loss.backward()
             if (n_iter + 1) % accum_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
