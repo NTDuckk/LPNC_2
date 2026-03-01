@@ -46,8 +46,7 @@ if __name__ == '__main__':
     logger.info("Using {} GPUs".format(num_gpus))
     logger.info(str(args).replace(',', '\n'))
     save_train_configs(args.output_dir, args)
-    if not os.path.isdir(args.output_dir+'/img'):
-        os.makedirs(args.output_dir+'/img')
+    os.makedirs(args.output_dir+'/img', exist_ok=True)
     # get image-text pair datasets dataloader
     # if 'ICFG-PEDES' not in args.dataset_name: #fixed
     #     args.val_dataset = 'val'
