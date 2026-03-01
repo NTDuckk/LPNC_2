@@ -75,27 +75,7 @@ def build_dataloader(args, tranforms=None):
     num_workers = args.num_workers
     dataset = __factory[args.dataset_name](root=args.root_dir)
     num_classes = len(dataset.train_id_container)
-    random.seed(42)
-    ds1 = dataset.train
-    all_text = []
-    all_id = []
-    for a_, b_, c_, text in ds1:
-        all_id.append(a_)
-        all_text.append(text)
-    sample_size = int(len(all_text) * 0.2)
-    random_indices = random.sample(range(len(all_text)), sample_size)
 
-    sampled_ids = [all_id[i] for i in random_indices]
-    sampled_texts = [all_text[i] for i in random_indices]
-    refer = TextDataset(sampled_ids,
-                        sampled_texts,
-                        text_length=args.text_length)
-
-    refer_txt_loader = DataLoader(refer,
-                                  batch_size=args.test_batch_size,
-                                  shuffle=False,
-                                  num_workers=num_workers)
-    
     if args.training:
         train_transforms = build_transforms(img_size=args.img_size,
                                             aug=args.img_aug,
@@ -113,14 +93,12 @@ def build_dataloader(args, tranforms=None):
                 logger.info('using ddp random identity sampler')
                 logger.info('DISTRIBUTED TRAIN START')
                 mini_batch_size = args.batch_size // get_world_size()
+                # TODO wait to fix bugs
                 data_sampler = RandomIdentitySampler_DDP(
                     dataset.train, args.batch_size, args.num_instance)
                 batch_sampler = torch.utils.data.sampler.BatchSampler(
                     data_sampler, mini_batch_size, True)
-                train_loader = DataLoader(train_set,
-                                          batch_sampler=batch_sampler,
-                                          num_workers=num_workers,
-                                          collate_fn=collate)
+
             else:
                 logger.info(
                     f'using random identity sampler: batch_size: {args.batch_size}, id: {args.batch_size // args.num_instance}, instance: {args.num_instance}'
@@ -160,7 +138,7 @@ def build_dataloader(args, tranforms=None):
                                     shuffle=False,
                                     num_workers=num_workers)
 
-        return train_loader, val_img_loader, val_txt_loader, refer_txt_loader, num_classes
+        return train_loader, val_img_loader, val_txt_loader, num_classes
 
     else:
         # build dataloader for testing
@@ -186,4 +164,4 @@ def build_dataloader(args, tranforms=None):
                                      shuffle=False,
                                      num_workers=num_workers)
 
-        return test_img_loader, test_txt_loader, refer_txt_loader, num_classes
+        return test_img_loader, test_txt_loader, num_classes

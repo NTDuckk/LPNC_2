@@ -407,27 +407,29 @@ class Transformer(nn.Module):
         super().__init__()
         self.width = width
         self.layers = layers
+        self.grad_checkpointing = False
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
-    def forward(self, x, use_checkpoint=False):
-        if not use_checkpoint:
-            return self.resblocks(x)
-
-        # Gradient checkpointing: checkpoint all blocks except last
-        # Last block runs normally to preserve attention weights for TSE layer
-        from torch.utils.checkpoint import checkpoint as ckpt
-        hidden = x[0] if isinstance(x, list) else x
-        blocks = list(self.resblocks)
-
-        for block in blocks[:-1]:
-            def _make_fn(mod):
-                def fn(h):
-                    return mod([h, None])[0]
-                return fn
-            hidden = ckpt(_make_fn(block), hidden, use_reentrant=False)
-
-        # Last block: normal forward to keep attention weights
-        return blocks[-1]([hidden, None])
+    def forward(self, x):
+        if self.grad_checkpointing and self.training:
+            for block in self.resblocks:
+                if isinstance(x, (list, tuple)):
+                    h = x[0]
+                    def _make_ckpt_fn(module):
+                        def _forward(hidden_state):
+                            out = module([hidden_state])
+                            return out[0], out[1]
+                        return _forward
+                    out_h, out_att = torch.utils.checkpoint.checkpoint(
+                        _make_ckpt_fn(block), h, use_reentrant=False
+                    )
+                    x = [out_h, out_att]
+                else:
+                    x = torch.utils.checkpoint.checkpoint(
+                        block, x, use_reentrant=False
+                    )
+            return x
+        return self.resblocks(x)
 
 
 class VisionTransformer(nn.Module):
@@ -449,7 +451,6 @@ class VisionTransformer(nn.Module):
         self.ln_pre = LayerNorm(width)
 
         self.transformer = Transformer(width, layers, heads)
-        self.use_checkpoint = False  # set True via args to enable gradient checkpointing
 
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
@@ -465,7 +466,7 @@ class VisionTransformer(nn.Module):
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
-        outputs = self.transformer([x], use_checkpoint=self.use_checkpoint)
+        outputs = self.transformer([x])
         x = outputs[0]
         atten = outputs[1]
         x = x.permute(1, 0, 2)  # LND -> NLD

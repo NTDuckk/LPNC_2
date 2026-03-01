@@ -28,8 +28,6 @@ def set_seed(seed=1):
 
 if __name__ == '__main__':
     args = get_args()
-    # torchrun sets LOCAL_RANK env var instead of --local_rank CLI arg in newer PyTorch
-    args.local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank))
     set_seed(1+get_rank())
     name = args.name
 
@@ -48,17 +46,28 @@ if __name__ == '__main__':
     logger.info("Using {} GPUs".format(num_gpus))
     logger.info(str(args).replace(',', '\n'))
     save_train_configs(args.output_dir, args)
-    os.makedirs(args.output_dir+'/img', exist_ok=True)
+    if not os.path.isdir(args.output_dir+'/img'):
+        os.makedirs(args.output_dir+'/img')
     # get image-text pair datasets dataloader
     # if 'ICFG-PEDES' not in args.dataset_name: #fixed
     #     args.val_dataset = 'val'
 
         
-    train_loader, val_img_loader, val_txt_loader, refer_txt_loader,num_classes = build_dataloader(args)
+    train_loader, val_img_loader, val_txt_loader, num_classes = build_dataloader(args)
     model = build_model(args, num_classes)
 
     logger.info('Total params: %2.fM' % (sum(p.numel() for p in model.parameters() if p.requires_grad) / 1000000.0))
     model.to(device)
+
+    # Enable gradient checkpointing
+    if args.gradient_checkpointing:
+        model.base_model.visual.transformer.grad_checkpointing = True
+        model.base_model.transformer.grad_checkpointing = True
+        if hasattr(model, 'attr_transformer'):
+            model.attr_transformer.grad_checkpointing = True
+        if hasattr(model, 'cross_modal_transformer'):
+            model.cross_modal_transformer.grad_checkpointing = True
+        logger.info("Gradient checkpointing enabled for all transformers")
     if args.finetune:
         logger.info("loading {} model".format(args.finetune))
         param_dict = torch.load(args.finetune,map_location='cpu')['model']
@@ -72,8 +81,8 @@ if __name__ == '__main__':
             model,
             device_ids=[args.local_rank],
             output_device=args.local_rank,
+            # this should be removed if we update BatchNorm stats
             broadcast_buffers=False,
-            find_unused_parameters=True,
         )
     optimizer = build_optimizer(args, model)
     scheduler = build_lr_scheduler(args, optimizer)
@@ -81,7 +90,7 @@ if __name__ == '__main__':
 
     is_master = get_rank() == 0
     checkpointer = Checkpointer(model, optimizer, scheduler, args.output_dir, is_master)
-    evaluator = Evaluator(val_img_loader, val_txt_loader, refer_txt_loader,args)
+    evaluator = Evaluator(val_img_loader, val_txt_loader, args)
 
     start_epoch = 1
     if args.resume:
