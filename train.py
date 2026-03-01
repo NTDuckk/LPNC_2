@@ -28,6 +28,8 @@ def set_seed(seed=1):
 
 if __name__ == '__main__':
     args = get_args()
+    # torchrun sets LOCAL_RANK env var instead of --local_rank CLI arg in newer PyTorch
+    args.local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank))
     set_seed(1+get_rank())
     name = args.name
 
