@@ -294,7 +294,7 @@ class LPNC(nn.Module):
             B_size = patch_tokens.shape[0]
             queries = self.cgi_queries.unsqueeze(0).expand(B_size, -1, -1)  # [B, K, 512]
             q_ln = self.cgi_ln_q(queries)
-            kv_ln = self.cgi_ln_kv(patch_tokens)
+            kv_ln = self.cgi_ln_kv(patch_tokens).to(q_ln.dtype)
             attn_out, _ = self.cgi_local_cross_attn(q_ln, kv_ln, kv_ln)  # [B, K, 512]
             attn_out = queries + attn_out  # residual connection
             P = attn_out + self.cgi_ffn(attn_out)  # FFN with residual: [B, K, 512]
