@@ -8,4 +8,6 @@ python train.py \
 --loss_names 'supid+cotrl+cid' \
 --num_epoch 60 \
 --fp16 \
---gradient_checkpointing
+--gradient_checkpointing \
+--batch_size 64 \
+--gradient_accumulation_steps 8
