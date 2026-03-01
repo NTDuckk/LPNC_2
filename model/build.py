@@ -304,7 +304,7 @@ class LPNC(nn.Module):
                 attr_q = self.attr_queries.unsqueeze(1).expand(-1, B_size, -1)  # [n, B, 512] LND
                 patch_lnd = patch_tokens.permute(1, 0, 2)  # [M, B, 512] LND
                 concat_input = torch.cat([attr_q.type_as(patch_lnd), patch_lnd], dim=0)  # [n+M, B, 512]
-                attr_out = self.attr_transformer(concat_input)  # [n+M, B, 512]
+                attr_out = self.attr_transformer([concat_input])  # [n+M, B, 512]
                 if isinstance(attr_out, (tuple, list)):
                     attr_out = attr_out[0]
                 attr_feats = attr_out[:self.num_attr_queries].permute(1, 0, 2)  # [B, n, 512]
