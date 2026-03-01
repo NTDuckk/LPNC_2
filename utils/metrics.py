@@ -86,8 +86,7 @@ class Evaluator():
             with torch.no_grad():
                 img_feat = model.encode_image(img).cpu()
                 image_feats = model.encode_image1(img)
-                model_dtype = next(model.parameters()).dtype
-                token_features = model.img2text(img_feat.to(dtype=model_dtype, device=device))
+                token_features = model.img2text(img_feat.half().to(device))
                 with autocast():
                     prompts = model.prompt_learner(token_features)
                     text_feature = model.text_encoder(prompts, model.prompt_learner.tokenized_prompts)

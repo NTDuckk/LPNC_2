@@ -6,7 +6,8 @@ import torch.nn as nn
 from .CrossEmbeddingLayer_tse import TexualEmbeddingLayer, VisualEmbeddingLayer
 from .triplet_loss import TripletLoss
 from .supcontrast import SupConLoss
-from torch.cuda.amp import autocast
+
+from utils.gather import gather_features, gather_labels
 
 
 def l2norm(X, dim=-1, eps=1e-8):
@@ -95,6 +96,10 @@ class LPNC(nn.Module):
         self.base_model, base_cfg = build_CLIP_from_openai_pretrained(args.pretrain_choice, args.img_size, args.stride_size)
         self.embed_dim = base_cfg['embed_dim']
         self.tse_embed_dim = 1024
+
+        # Enable gradient checkpointing for visual encoder to reduce VRAM
+        if getattr(args, 'gradient_checkpointing', False):
+            self.base_model.visual.use_checkpoint = True
 
         if 'cid' in args.loss_names:
             self.num_classes = num_classes + 1
@@ -279,71 +284,85 @@ class LPNC(nn.Module):
         t_tse_f = self.texual_emb_layer(text_feats, caption_ids, atten_t)
 
         if 'supid' in self.current_task:
-            # Element-wise multiplication: image features x text features
-            refined_cls = i_feats * t_feats                                      # CLS x text EOT: [B, 512]
-            refined_patch = image_feats[:, 1:, :].float() * t_feats.unsqueeze(1) # patch x text EOT: [B, M, 512]
-    
-            token_features = self.img2text(i_feats.half())  # S*_global: [B, 512]
-            with autocast():
-                # CGI Local: compute S*_local from image patch tokens
-                patch_tokens = refined_patch  # [B, M, 512]
-                B_size = patch_tokens.shape[0]
-                queries = self.cgi_queries.unsqueeze(0).expand(B_size, -1, -1)  # [B, K, 512]
-                q_ln = self.cgi_ln_q(queries)
-                kv_ln = self.cgi_ln_kv(patch_tokens)
-                attn_out, _ = self.cgi_local_cross_attn(q_ln, kv_ln, kv_ln)  # [B, K, 512]
-                attn_out = queries + attn_out  # residual connection
-                P = attn_out + self.cgi_ffn(attn_out)  # FFN with residual: [B, K, 512]
-                s_local = self.cgi_local_map(P.mean(dim=1))  # Avg pool + MLP: [B, 512]
+            # Text-guided refinement (SCGI Eq.3): element-wise multiply image feats with t_feats
+            refined_cls = i_feats * t_feats                          # [B, 512]
+            refined_patches = image_feats[:, 1:, :].float() * t_feats.unsqueeze(1)  # [B, M, 512]
 
-                # Combine S*_global + S*_local
-                s_star = token_features + s_local
+            token_features = self.img2text(refined_cls.half())  # S*_global: [B, 512] half
+            # CGI Local: compute S*_local from refined patch tokens
+            patch_tokens = refined_patches.half()  # [B, M, 512] convert to half for model layers
+            B_size = patch_tokens.shape[0]
+            queries = self.cgi_queries.unsqueeze(0).expand(B_size, -1, -1)  # [B, K, 512]
+            q_ln = self.cgi_ln_q(queries)
+            kv_ln = self.cgi_ln_kv(patch_tokens)
+            attn_out, _ = self.cgi_local_cross_attn(q_ln, kv_ln, kv_ln)  # [B, K, 512]
+            attn_out = queries + attn_out  # residual connection
+            P = attn_out + self.cgi_ffn(attn_out)  # FFN with residual: [B, K, 512]
+            s_local = self.cgi_local_map(P.mean(dim=1))  # Avg pool + MLP: [B, 512]
 
-                # --- IADT Attribute-aware tokens ---
-                # 1) Attribute extraction: concat [queries | patches] → Transformer → FC
-                attr_q = self.attr_queries.unsqueeze(1).expand(-1, B_size, -1)  # [n, B, 512] LND
-                patch_lnd = patch_tokens.permute(1, 0, 2)  # [M, B, 512] LND
-                concat_input = torch.cat([attr_q.type_as(patch_lnd), patch_lnd], dim=0)  # [n+M, B, 512]
-                attr_out = self.attr_transformer([concat_input])  # [n+M, B, 512]
-                if isinstance(attr_out, (tuple, list)):
-                    attr_out = attr_out[0]
-                attr_feats = attr_out[:self.num_attr_queries].permute(1, 0, 2)  # [B, n, 512]
-                X_prime = self.attr_fc(attr_feats)  # [B, n, 512]
+            # Combine S*_global + S*_local
+            s_star = token_features + s_local
 
-                # 2) Attribute filtering: cosine similarity with global feat, select top-k
-                X_prime_norm = X_prime / (X_prime.norm(dim=-1, keepdim=True) + 1e-8)
-                global_feat = i_feats.unsqueeze(1)  # [B, 1, 512]
-                global_norm = global_feat / (global_feat.norm(dim=-1, keepdim=True) + 1e-8)
-                sim_scores = (global_norm * X_prime_norm).sum(dim=-1)  # [B, n]
-                topk_indices = sim_scores.topk(self.num_attr_select, dim=-1).indices  # [B, k]
-                W_attr = torch.gather(X_prime, 1,
-                    topk_indices.unsqueeze(-1).expand(-1, -1, self.embed_dim))  # [B, k, 512]
+            # --- IADT Attribute-aware tokens ---
+            # 1) Attribute extraction: concat [queries | patches] → Transformer → FC
+            attr_q = self.attr_queries.unsqueeze(1).expand(-1, B_size, -1)  # [n, B, 512] LND half
+            patch_lnd = patch_tokens.permute(1, 0, 2)  # [M, B, 512] LND half
+            concat_input = torch.cat([attr_q, patch_lnd], dim=0)  # [n+M, B, 512] both half
+            attr_out = self.attr_transformer([concat_input])  # returns [tensor, atten_weight]
+            if isinstance(attr_out, (tuple, list)):
+                attr_out = attr_out[0]  # [n+M, B, 512]
+            attr_feats = attr_out[:self.num_attr_queries].permute(1, 0, 2)  # [B, n, 512]
+            X_prime = self.attr_fc(attr_feats)  # [B, n, 512]
 
-                # 3) Orthogonal loss: L_ortho = ||WW^T - I||^2_F
-                ortho_matrix = torch.bmm(W_attr, W_attr.transpose(1, 2))  # [B, k, k]
-                identity = torch.eye(self.num_attr_select, device=ortho_matrix.device).unsqueeze(0)
-                L_ortho = ((ortho_matrix - identity) ** 2).sum(dim=(1, 2)).mean()
+            # 2) Attribute filtering: cosine similarity with global feat, select top-k
+            X_prime_float = X_prime.float()  # float32 for numerical stability
+            X_prime_norm = X_prime_float / (X_prime_float.norm(dim=-1, keepdim=True) + 1e-8)
+            global_feat = i_feats.unsqueeze(1)  # [B, 1, 512] float32
+            global_norm = global_feat / (global_feat.norm(dim=-1, keepdim=True) + 1e-8)
+            sim_scores = (global_norm * X_prime_norm).sum(dim=-1)  # [B, n]
+            topk_indices = sim_scores.topk(self.num_attr_select, dim=-1).indices  # [B, k]
+            W_attr = torch.gather(X_prime, 1,
+                topk_indices.unsqueeze(-1).expand(-1, -1, self.embed_dim))  # [B, k, 512] half
 
-                # 4) Attribute mapping: f_A(W) → attribute pseudo-word tokens
-                attr_tokens = self.attr_map(W_attr)  # [B, k, 512]
+            # 3) Orthogonal loss: L_ortho = ||WW^T - I||^2_F (float32 for stability)
+            W_attr_float = W_attr.float()
+            ortho_matrix = torch.bmm(W_attr_float, W_attr_float.transpose(1, 2))  # [B, k, k]
+            identity = torch.eye(self.num_attr_select, device=ortho_matrix.device).unsqueeze(0)
+            L_ortho = ((ortho_matrix - identity) ** 2).sum(dim=(1, 2)).mean()
 
-                # Construct IADT prompt: "a [S*] person with [A*_1]...[A*_k]"
-                prompts = self.prompt_learner(s_star, attr_tokens)
-                text_feature = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
+            # 4) Attribute mapping: f_A(W) → attribute pseudo-word tokens
+            attr_tokens = self.attr_map(W_attr)  # [B, k, 512] half
 
-                cross_x = self.cross_former(text_feature.unsqueeze(1), image_feats, image_feats)
-                cross_x_bn = self.bottleneck_proj(cross_x.squeeze(1))
-                cls_score = self.classifier_proj(cross_x_bn.half()).float()
-            supcon_loss = supcon(i_feats, text_feature.float(), batch['pids'], batch['pids']) + supcon(text_feature.float(),i_feats,batch['pids'],batch['pids'])
-            cross_id_loss = objectives.compute_id(cls_score, batch['pids'])
+            # Construct IADT prompt: "a [S*] person with [A*_1]...[A*_k]"
+            prompts = self.prompt_learner(s_star, attr_tokens)
+            text_feature = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
+
+            cross_x = self.cross_former(text_feature.unsqueeze(1), image_feats, image_feats)
+            cross_x_bn = self.bottleneck_proj(cross_x.squeeze(1))
+            cls_score = self.classifier_proj(cross_x_bn.half()).float()
+            # Gather features across GPUs for contrastive losses
+            all_i_feats = gather_features(i_feats)
+            all_text_feat = gather_features(text_feature.float())
+            all_pids = gather_labels(batch['pids'])
+            all_cls_score = gather_features(cls_score)
+
+            supcon_loss = supcon(all_i_feats, all_text_feat, all_pids, all_pids) + supcon(all_text_feat, all_i_feats, all_pids, all_pids)
+            cross_id_loss = objectives.compute_id(all_cls_score, all_pids)
             ret.update({'supid_loss': self.args.lambda1_weight * supcon_loss + self.args.lambda2_weight * cross_id_loss + L_ortho})
 
         if 'cid' in self.current_task:
-            S = objectives.cosine_similarity_matrix(i_feats, t_feats)
-            hard_negatives = objectives.sample_hard_negatives(S, batch['pids'])
-            M = batch['pids'].max().item()
-            new_labels = objectives.update_labels_for_negatives(batch['pids'], hard_negatives, M)
-            all_pairs = objectives.create_sample_pairs(i_feats, t_feats, hard_negatives, new_labels, batch['pids'])
+            # Gather features across GPUs for hard negative mining
+            all_i_feats_cid = gather_features(i_feats)
+            all_t_feats_cid = gather_features(t_feats)
+            all_i_tse_f = gather_features(i_tse_f)
+            all_t_tse_f = gather_features(t_tse_f)
+            all_pids_cid = gather_labels(batch['pids'])
+
+            S = objectives.cosine_similarity_matrix(all_i_feats_cid, all_t_feats_cid)
+            hard_negatives = objectives.sample_hard_negatives(S, all_pids_cid)
+            M = all_pids_cid.max().item()
+            new_labels = objectives.update_labels_for_negatives(all_pids_cid, hard_negatives, M)
+            all_pairs = objectives.create_sample_pairs(all_i_feats_cid, all_t_feats_cid, hard_negatives, new_labels, all_pids_cid)
             all_cid_loss = 0
             ni_feats, nt_feats, nlabels = all_pairs
             z_feats1 = torch.cat([ni_feats.float(), nt_feats.float()], dim=1)
@@ -352,15 +371,15 @@ class LPNC(nn.Module):
             z_feats2 = self.mlp_bge(z_feats2.float())
             cross_modal_logits1 = self.classifier_bge(z_feats1.float())
             cross_modal_logits2 = self.classifier_bge(z_feats2.float())
-            device = cross_modal_logits1.device 
-            nlabels = nlabels.to(device) 
+            device = cross_modal_logits1.device
+            nlabels = nlabels.to(device)
             closs1 =  objectives.compute_cid(cross_modal_logits1, cross_modal_logits2,nlabels)
-            
-            S_ = objectives.cosine_similarity_matrix(i_tse_f, t_tse_f)
-            hard_negatives_ = objectives.sample_hard_negatives(S_, batch['pids'])
-            M_ = batch['pids'].max().item()
-            new_labels_ = objectives.update_labels_for_negatives(batch['pids'], hard_negatives_, M_)
-            all_pairs_ = objectives.create_sample_pairs(i_tse_f, t_tse_f, hard_negatives_, new_labels_, batch['pids'])
+
+            S_ = objectives.cosine_similarity_matrix(all_i_tse_f, all_t_tse_f)
+            hard_negatives_ = objectives.sample_hard_negatives(S_, all_pids_cid)
+            M_ = all_pids_cid.max().item()
+            new_labels_ = objectives.update_labels_for_negatives(all_pids_cid, hard_negatives_, M_)
+            all_pairs_ = objectives.create_sample_pairs(all_i_tse_f, all_t_tse_f, hard_negatives_, new_labels_, all_pids_cid)
             all_cid_loss_ = 0
             ni_feats_, nt_feats_, nlabels_ = all_pairs_
             z_feats1_ = torch.cat([ni_feats_.float(), nt_feats_.float()], dim=1)
@@ -373,23 +392,30 @@ class LPNC(nn.Module):
             nlabels_ = nlabels_.to(device)
             closs2 =  objectives.compute_cid(cross_modal_logits1_, cross_modal_logits2_,nlabels_)
 
-            image_logits = self.classifier_id_bge(i_feats.half()).float()
-            text_logits = self.classifier_id_bge(t_feats.half()).float()
-            closs3 = objectives.compute_id(image_logits, batch['pids']) + objectives.compute_id(text_logits, batch['pids'])
-            
-            image_logits_ = self.classifier_id_tse(i_tse_f.half()).float()
-            text_logits_ = self.classifier_id_tse(t_tse_f.half()).float()
-            closs4 = objectives.compute_id(image_logits_, batch['pids']) + objectives.compute_id(text_logits_, batch['pids'])
+            image_logits = self.classifier_id_bge(all_i_feats_cid.half()).float()
+            text_logits = self.classifier_id_bge(all_t_feats_cid.half()).float()
+            closs3 = objectives.compute_id(image_logits, all_pids_cid) + objectives.compute_id(text_logits, all_pids_cid)
+
+            image_logits_ = self.classifier_id_tse(all_i_tse_f.half()).float()
+            text_logits_ = self.classifier_id_tse(all_t_tse_f.half()).float()
+            closs4 = objectives.compute_id(image_logits_, all_pids_cid) + objectives.compute_id(text_logits_, all_pids_cid)
             ret.update({'cid_loss': closs1+closs2+closs3+closs4})
 
 
 
 
         if 'cotrl' in self.current_task:
-            TAL_bge_loss = objectives.compute_TAL(i_feats, t_feats,batch['pids'],margin=self.args.margin,tau=self.args.tau)
-            TAL_tse_loss = objectives.compute_TAL(i_tse_f, t_tse_f,batch['pids'],margin=self.args.margin,tau=self.args.tau)
-            triloss_i, _, _ = triplet(i_feats, batch['pids'])
-            triloss_t, _, _ = triplet(t_feats, batch['pids'])
+            # Gather features across GPUs for TAL and Triplet losses
+            all_i_feats_cotrl = gather_features(i_feats)
+            all_t_feats_cotrl = gather_features(t_feats)
+            all_i_tse_cotrl = gather_features(i_tse_f)
+            all_t_tse_cotrl = gather_features(t_tse_f)
+            all_pids_cotrl = gather_labels(batch['pids'])
+
+            TAL_bge_loss = objectives.compute_TAL(all_i_feats_cotrl, all_t_feats_cotrl, all_pids_cotrl, margin=self.args.margin, tau=self.args.tau)
+            TAL_tse_loss = objectives.compute_TAL(all_i_tse_cotrl, all_t_tse_cotrl, all_pids_cotrl, margin=self.args.margin, tau=self.args.tau)
+            triloss_i, _, _ = triplet(all_i_feats_cotrl, all_pids_cotrl)
+            triloss_t, _, _ = triplet(all_t_feats_cotrl, all_pids_cotrl)
             ret.update({'cotrl_loss': TAL_bge_loss + TAL_tse_loss + triloss_i + triloss_t})
             
         return ret
@@ -436,6 +462,5 @@ class PromptLearner(nn.Module):
 def build_model(args, num_classes=11003):
     model = LPNC(args, num_classes)
     # covert model to fp16
-    if not getattr(args, 'fp16', False):
-        convert_weights(model)
+    convert_weights(model)
     return model

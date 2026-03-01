@@ -66,11 +66,6 @@ def get_args():
     parser.add_argument("--target_lr", type=float, default=0)
     parser.add_argument("--power", type=float, default=0.9)
 
-    ######################## memory optimization ########################
-    parser.add_argument("--fp16", default=False, action='store_true', help="enable full AMP mixed precision training")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="accumulate gradients over N steps (effective_bs = batch_size * N)")
-    parser.add_argument("--gradient_checkpointing", default=False, action='store_true', help="enable gradient checkpointing to save activation memory")
-
     ######################## dataset ########################
     parser.add_argument("--dataset_name", default="CUHK-PEDES", help="[CUHK-PEDES, ICFG-PEDES, RSTPReid]")
     parser.add_argument("--sampler", default="identity", help="choose sampler from [identity, random]")
@@ -80,6 +75,13 @@ def get_args():
     parser.add_argument("--test_batch_size", type=int, default=512)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--test", dest='training', default=True, action='store_false')
+
+    ######################## memory & multi-GPU ########################
+    parser.add_argument("--gradient_checkpointing", default=False, action='store_true',
+                        help="enable gradient checkpointing to reduce VRAM ~50%%")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1,
+                        help="number of steps to accumulate gradients before optimizer step")
+
     args = parser.parse_args()
 
     return args

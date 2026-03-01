@@ -2,7 +2,7 @@ import logging
 import os
 import time
 import torch
-from torch.cuda.amp import autocast, GradScaler
+from contextlib import nullcontext
 from utils.meter import AverageMeter
 from utils.metrics import Evaluator
 from utils.comm import get_rank, synchronize
@@ -22,15 +22,6 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
 
     logger = logging.getLogger("LPNC.train")
     logger.info('start training')
-
-    # AMP setup
-    use_fp16 = getattr(args, 'fp16', False)
-    scaler = GradScaler() if use_fp16 else None
-    accum_steps = getattr(args, 'gradient_accumulation_steps', 1)
-    if use_fp16:
-        logger.info("AMP mixed precision training enabled")
-    if accum_steps > 1:
-        logger.info(f"Gradient accumulation: {accum_steps} steps (effective_bs = {args.batch_size} x {accum_steps} = {args.batch_size * accum_steps})")
 
     meters = {
         "loss": AverageMeter(),
@@ -53,37 +44,27 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
 
         model.train()
         model.epoch = epoch
-        optimizer.zero_grad()
-
+        
+        accum_steps = getattr(args, 'gradient_accumulation_steps', 1)
         for n_iter, batch in enumerate(train_loader):
             batch = {k: v.to(device) for k, v in batch.items()}
             index = batch['index']
-
-            with autocast(enabled=use_fp16):
+            # Skip DDP gradient sync during accumulation steps (sync only on last step)
+            is_accumulating = (n_iter + 1) % accum_steps != 0
+            sync_context = model.no_sync if (args.distributed and is_accumulating) else nullcontext
+            with sync_context():
                 ret = model(batch)
                 total_loss = sum([v for k, v in ret.items() if "loss" in k])
-                if accum_steps > 1:
-                    total_loss = total_loss / accum_steps
-
-            if scaler is not None:
-                scaler.scale(total_loss).backward()
-            else:
+                total_loss = total_loss / accum_steps  # scale loss for accumulation
+                batch_size = batch['images'].shape[0]
+                meters['loss'].update(total_loss.item() * accum_steps, batch_size)
+                meters['supid_loss'].update(ret.get('supid_loss', 0), batch_size)
+                meters['cotrl_loss'].update(ret.get('cotrl_loss', 0), batch_size)
+                meters['cid_loss'].update(ret.get('cid_loss', 0), batch_size)
                 total_loss.backward()
-
             if (n_iter + 1) % accum_steps == 0:
-                if scaler is not None:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
+                optimizer.step()
                 optimizer.zero_grad()
-
-            batch_size = batch['images'].shape[0]
-            loss_val = total_loss.item() * accum_steps if accum_steps > 1 else total_loss.item()
-            meters['loss'].update(loss_val, batch_size)
-            meters['supid_loss'].update(ret.get('supid_loss', 0), batch_size)
-            meters['cotrl_loss'].update(ret.get('cotrl_loss', 0), batch_size)
-            meters['cid_loss'].update(ret.get('cid_loss', 0), batch_size)
             synchronize()
             if (n_iter + 1) % log_period == 0:
                 info_str = f"Epoch[{epoch}] Iteration[{n_iter + 1}/{len(train_loader)}]"
