@@ -248,7 +248,8 @@ class LPNC(nn.Module):
         token_features = self.img2text(i_feats.half())                         # [B, D]
 
         # S*_local   (use refined patch tokens from refined_image_feats, then project with W)
-        patch_feats = refined_image_feats[:, 1:, :].float()                    # [B, M, D]
+        # ensure patch_feats has same dtype as parameter `W` to avoid dtype mismatch
+        patch_feats = refined_image_feats[:, 1:, :].to(self.W.dtype)           # [B, M, D]
         local_features = self.local_pseudo(patch_feats @ self.W)               # [B, D]
 
         # S* = S*_global + S*_local
