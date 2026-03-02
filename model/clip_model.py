@@ -661,6 +661,22 @@ def convert_weights(model: nn.Module):
                 if attr is not None:
                     attr.data = attr.data.half()
 
+        # Also convert any parameters/buffers that are Module-owned but not covered above
+        # (e.g., custom nn.Parameter like `queries`, or simple buffers like `W`).
+        # We only convert parameters/buffers that are floating tensors.
+        try:
+            for pname, p in getattr(l, "_parameters", {}).items():
+                if p is not None and isinstance(p.data, torch.Tensor) and p.data.is_floating_point():
+                    p.data = p.data.half()
+        except Exception:
+            pass
+        try:
+            for bname, b in getattr(l, "_buffers", {}).items():
+                if b is not None and isinstance(b, torch.Tensor) and b.is_floating_point():
+                    l._buffers[bname] = b.half()
+        except Exception:
+            pass
+
     model.apply(_convert_weights_to_fp16)
 
 
