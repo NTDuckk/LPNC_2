@@ -190,7 +190,13 @@ def build_dataloader(args) -> Tuple[DataLoader, DataLoader, DataLoader, Optional
     if annos is None or split is None:
         raise ValueError(f"Dataset object must provide '{split_name}_annos' and '{split_name}'")
 
-    img_pids, img_paths = _parse_annos(annos)
+    # Prefer processed split (dict) that may already contain full img_paths
+    if isinstance(split, dict) and "img_paths" in split:
+        img_paths = split.get("img_paths", [])
+        img_pids = split.get("image_pids", split.get("img_pids", []))
+    else:
+        img_pids, img_paths = _parse_annos(annos)
+
     caption_pids, captions = _parse_captions(split)
 
     val_img_set = ImageDataset(img_pids, img_paths, transform=test_tf)
