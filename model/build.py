@@ -151,7 +151,6 @@ class PromptLearner(nn.Module):
 
 class LPNC(nn.Module):
     """
-    - Keep ONLY supid branch
     - Keep caption t_feats fusion
     - Add Triplet on cross-attention feature (PromptSG-style)
     - Remove token selection / cotrl / cid
@@ -161,8 +160,6 @@ class LPNC(nn.Module):
         self.args = args
         self.num_classes = num_classes
 
-        self.current_task = ["supid"]
-        print("Training Model with ['supid'] only (cotrl/cid/token-selection removed).")
 
         self.base_model, base_cfg = build_CLIP_from_openai_pretrained(
             args.pretrain_choice, args.img_size, args.stride_size
@@ -239,7 +236,7 @@ class LPNC(nn.Module):
         image_feats, atten_i, text_feats, atten_t = self.base_model(images, caption_ids)
 
         t_feats = text_feats[torch.arange(text_feats.shape[0]), caption_ids.argmax(dim=-1)].float()  # [B, D]
-
+        img_feats = image_feats[:, 0, :].float()                               # [B, D] CLS token
         # ---- SCGI-style caption-guided refinement (Eq.3: ṽ = v ⊙ t) ----
         refined_image_feats = image_feats * t_feats.unsqueeze(1)               # [B, M+1, D] element-wise
         i_feats = refined_image_feats[:, 0, :].float()                         # [B, D] CLS token
@@ -265,8 +262,8 @@ class LPNC(nn.Module):
             cls_score = self.classifier_proj(cross_x_bn.half()).float()
 
         supcon_loss = (
-            supcon(i_feats, text_feature.float(), batch['pids'], batch['pids'])
-            + supcon(text_feature.float(), i_feats, batch['pids'], batch['pids'])
+            supcon(img_feats, text_feature.float(), batch['pids'], batch['pids'])
+            + supcon(text_feature.float(), img_feats, batch['pids'], batch['pids'])
         )
         id_loss = objectives.compute_id(cls_score, batch['pids'])
 
@@ -277,11 +274,7 @@ class LPNC(nn.Module):
         ret['id_loss'] = id_loss
         ret['triplet_loss'] = tri_loss
 
-        ret['supid_loss'] = (
-            self.args.lambda1_weight * supcon_loss
-            + self.args.lambda2_weight * id_loss
-            + getattr(self.args, "lambda3_weight", 1.0) * tri_loss
-        )
+        # Combined loss is intentionally not returned; keep individual component losses only
         return ret
 
 def build_model(args, num_classes=11003):

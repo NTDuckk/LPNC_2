@@ -2,14 +2,14 @@ import argparse
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description="LPNC Args (SupID-only + PromptSG-style inference)")
+    parser = argparse.ArgumentParser(description="LPNC Args (PromptSG-style inference)")
 
     # (legacy params kept; cotrl/cid removed in code path)
     parser.add_argument("--tau", default=0.015, type=float)
     parser.add_argument("--select_ratio", default=0.4, type=float)
     parser.add_argument("--margin", default=0.1, type=float)
 
-    # SupID weights
+    # Loss weights
     parser.add_argument("--lambda1_weight", default=0.5, type=float)   # SupCon weight
     parser.add_argument("--lambda2_weight", default=1.0, type=float)   # ID(CE) weight
     parser.add_argument("--lambda3_weight", default=1.0, type=float)   # Triplet weight (new)
@@ -41,8 +41,8 @@ def get_args():
     parser.add_argument("--MLM", default=False, action='store_true', help="whether to use MLM dataset")
 
     ######################## loss settings ########################
-    # IMPORTANT: default to supid ONLY (cotrl/cid removed)
-    parser.add_argument("--loss_names", default='supid', help="loss pipeline (should be 'supid')")
+    # Loss pipeline name (legacy: previously 'supid'); kept for compatibility
+    parser.add_argument("--loss_names", default='combined', help="loss pipeline name (default: combined)")
 
     ######################## inference settings (PromptSG-style) ########################
     # simplified: fixed prompt "A photo of a person" (fast)

@@ -19,10 +19,9 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
     logger = logging.getLogger("LPNC.train")
     logger.info("start training")
 
-    # keep ONLY supid (+ its components)
+    # keep only supervised ID/contrastive/triplet components
     meters = {
         "loss": AverageMeter(),
-        "supid_loss": AverageMeter(),
         "supcon_loss": AverageMeter(),
         "id_loss": AverageMeter(),
         "triplet_loss": AverageMeter(),
@@ -46,12 +45,12 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
 
             ret = model(batch)
 
-            # sum only component losses (exclude 'supid_loss')
+            # sum component losses
             total_loss = sum([ret[k] for k in ("supcon_loss", "id_loss", "triplet_loss") if k in ret])
 
             batch_size = batch["images"].shape[0]
             meters["loss"].update(float(total_loss.item()), batch_size)
-            meters["supid_loss"].update(float(ret.get("supid_loss", 0.0)), batch_size)
+            # keep per-component meters
             meters["supcon_loss"].update(float(ret.get("supcon_loss", 0.0)), batch_size)
             meters["id_loss"].update(float(ret.get("id_loss", 0.0)), batch_size)
             meters["triplet_loss"].update(float(ret.get("triplet_loss", 0.0)), batch_size)

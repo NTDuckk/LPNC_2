@@ -13,7 +13,7 @@ from fvcore.nn import FlopCountAnalysis
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="TranTextReID Text")
-    sub = 'LPNC_logs_cangshu/CUHK-PEDES/20250306_134047_LPNC_supid+cotrl+cid'
+    sub = 'LPNC_logs_cangshu/CUHK-PEDES/20250306_134047_LPNC'
     parser.add_argument("--config_file", default=f'{sub}/configs.yaml')
     args = parser.parse_args()
     args = load_train_configs(args.config_file)
