@@ -23,6 +23,11 @@ def build_optimizer(args, model):
         if "classifier" in key or "mlm_head" in key:
             lr = args.lr * args.lr_factor
 
+        if "visul_emb_layer" in key:
+            lr =  0.001
+        if "texual_emb_layer" in key:
+            lr =  0.001 
+            
         params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
 
     if args.optimizer == "SGD":

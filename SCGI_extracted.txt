@@ -1,0 +1,1336 @@
+
+==================================================
+Page 1
+==================================================
+1
+CLIP-SCGI: Synthesized Caption-Guided Inversion
+for Person Re-Identification
+Qianru Han, Xinwei He, Zhi Liu, Sannyuya Liu, Ying Zhang, Jinhai Xiang‡
+Abstract—Person re-identification (ReID) has recently ben-
+efited from large pretrained vision-language models such as
+Contrastive Language-Image Pre-Training (CLIP). However, the
+absence of concrete descriptions necessitates the use of implicit
+text embeddings, which demand complicated and inefficient
+training strategies. To address this issue, we first propose one
+straightforward solution by leveraging existing image captioning
+models to generate pseudo captions for person images, and
+thereby boost person re-identification with large vision language
+models. Using models like the Large Language and Vision Assis-
+tant (LLAVA), we generate high-quality captions based on fixed
+templates that capture key semantic attributes such as gender,
+clothing, and age. By augmenting ReID training sets from uni-
+modality (image) to bi-modality (image and text), we introduce
+CLIP-SCGI, a simple yet effective framework that leverages
+synthesized captions to guide the learning of discriminative
+and robust representations. Built on CLIP, CLIP-SCGI fuses
+image and text embeddings through two modules to enhance the
+training process. To address quality issues in generated captions,
+we introduce a caption-guided inversion module that captures
+semantic attributes from images by converting relevant visual
+information into pseudo-word tokens based on the descriptions.
+This approach helps the model better capture key information
+and focus on relevant regions. The extracted features are then
+utilized in a cross-modal fusion module, guiding the model to
+focus on regions semantically consistent with the caption, thereby
+facilitating the optimization of the visual encoder to extract
+discriminative and robust representations. Extensive experiments
+on four popular ReID benchmarks demonstrate that CLIP-SCGI
+outperforms the state-of-the-art by a significant margin.
+Index Terms—person re-identification, caption-guided, multi-
+model fusion.
+I. INTRODUCTION
+P
+ERSON re-identification (Re-ID) involves identifying a
+person across images taken from different cameras. It
+is one of the critical components in intelligent surveillance
+systems for public safety and security [1]. Typically, Re-
+ID is formulated as a person retrieval task: given a person
+image from a probe set, the goal is to learn discriminative
+representations that can correctly match the image of the
+same person in the gallery set. However, in practice, due to
+the presence of disturbing factors such as lighting, pose and
+occlusion [2] [3] [4], it is an extremely challenging task to
+learn discriminative features.
+‡ Corresponding author: Jinhai Xiang.
+Q. Han, X. He, Y. Zhang and J. Xiang are with the College of Informatics,
+Huazhong Agricultural University, Wuhan 430070, China. E-mail: qian-
+ruhan@webmail.hzau.edu.cn, {xwhe, zy, jimmy xiang}@mail.hzau.edu.cn.
+Z. Liu and S. Liu are with the National Engineering Research Center
+of Educational Big Data, Central China Normal University, Wuhan 430079,
+China. E-mail: zhiliu@mail.ccnu.edu.cn, lsy.nercel@gmail.com.
+(a) Existing CLIP-ReID method
+(b) Our CLIP-SCGI
+Fig. 1: Comparison between (a) the previous CLIP-ReID
+method, where the text prompt in the grey-highlighted area
+indicates learnable embeddings requiring pretraining first, and
+(b) our proposed CLIP-SCGI method, which combines ex-
+plicitly generated text embeddings with image features for
+guidance.
+Various strategies have been proposed to improve the rep-
+resentation learning process from both feature level and loss
+levels. At the feature level, global feature-based methods [5]
+[6] aim to learn global features to represent the person images,
+while the local-based methods [7] [8] aim to aggregate part-
+level local features. At the loss level, researchers have also
+presented various similarity loss functions for training. For
+instance, pairwise losses [9] attempt to minimize the distance
+between positive pairs while maximizing the negative pair
+distances. Triplet loss [10] enforces ranking order on the rela-
+tive distances of anchor to positive and negative, respectively.
+Current methods often focus on improving single-modality
+feature learning and loss functions. Despite promising results,
+existing methods face the following limitations: 1) the se-
+mantic components of single-image modalities are inadequate
+for extracting comprehensive semantic information, potentially
+overlooking the inherent and fine-grained semantic attribute
+information across different samples, which restricts overall
+performance; 2) ReID datasets are relatively small, and models
+arXiv:2410.09382v1  [cs.CV]  12 Oct 2024
+
+
+==================================================
+Page 2
+==================================================
+2
+trained on these datasets may easily overfit small irrelevant
+regions in the image, leading to poor generalizability to real
+yet diverse scenarios.
+Recently, CLIP [11] which is trained on 400 million image-
+text pairs with contrastive loss, has been demonstrated to
+produce strong generalizable representations for a wide array
+of downstream tasks. Inspired by its success, CLIP-ReID [12]
+explores its effectiveness in the ReID field and observes
+encouraging results. Nonetheless, most ReID datasets do not
+contain corresponding image-text pairs. To address this issue,
+they further leverage learnable prompts to describe the person
+images implicitly, and then present a two-stage training strat-
+egy to alternately fix the image and text encoders to optimize
+them (see Fig. 1a). Yet, such an implicit way to describe the
+image may lead to a compromise in performance and require
+a complicated and inefficient training process.
+When performing ReID tasks, it is a natural human instinct
+to utilize textual descriptions to emphasize and distinguish the
+individuals in the images. Indeed, regardless of the availability,
+concrete descriptions (or captions) may naturally be a better
+fit for supervising the network to learn discriminative and
+robust features for ReID than the single ID index and the
+implicit learnable text embeddings. First, it enables flexible
+and robust learning of ID-specific embeddings. With captions
+as the guidance, the model can now be explicitly enhanced by
+shared semantics across samples and thereby produce more
+diversified features. In contrast, representation learning based
+solely on single IDs makes it easily overfits the most pro-
+nounced attributes like clothes. Second, it helps the model to
+produce more expressive representations of the person image.
+Inherently, the captions can provide a more comprehensive
+understanding of the distinctive aspects of the persons, e.g.,
+various visual attributes and contextual information, which
+assist the model in focusing on specific identity-related fea-
+tures, thereby overcoming challenges like variations in pose
+and lighting conditions.
+Thanks to large vision language models, we can easily
+generate high-quality synthetic captions for each image to
+enrich a ReID dataset with only visual images. Any off-the-
+shelf pretrained image captioning model can be utilized. In
+this paper, we utilize LLAVA [13] to generate the captions for
+each image. The data augmentation process of converting a
+uni-modal (i.e., image) dataset to a bimodal (i.e., image and
+text) enables us to leverage state-of-the-art large vision and
+language models (e.g., CLIP) to learn robust representations
+with minimal effort. Note that we only have to generate these
+captions offline for our training data and use them to guide
+the representation learning, which is very flexible in practice
+and does not incur extra inference costs.
+Based on the synthesized captions, we introduce a sim-
+ple yet effective framework named CLIP-SCGI by exploit-
+ing Synthesized Caption-Guided Inversion for person reID
+(Fig. 1b). Our framework leverages the pretrained CLIP model,
+which has demonstrated superior capacity in deriving discrim-
+inative representations for ReID. Given a person image and
+its corresponding synthesized text, we first feed them into
+the visual encoder and text encoder, respectively, to produce
+image and text embeddings. We then fused the two modalities
+to generate more accurate guidance. Despite the effectiveness
+of large vision language models, the generated descriptions
+can still contain errors. These inaccuracies in the textual
+descriptions can negatively impact the training process and
+overall model performance. Therefore, addressing the impact
+of incorrect captions is crucial. To address this issue, we intro-
+duce a novel approach inspired by textual inversion [14] [15].
+Our method first maps the person image into a pseudo-word
+S∗guided by the synthesized captioning embeddings and
+then insert it with a fixed prompt “a photo of [S∗] person”.
+Consequently, the corresponding concepts exhibited in the
+visual space are collected by the text embeddings to provide
+more accurate guidance. We further feed the prompt into the
+text encoder again to encode it into the text embedding space,
+which will serve as a query for fusion with the visual features.
+Based on the final multi-modal embeddings, we train the
+whole framework with the widely-used loss functions: cross-
+entropy loss and triplet loss.
+Our framework has the following desirable properties. First,
+it opens the possibility of training more expressive and
+flexible representations for ReID with synthesized captions,
+which alleviates the overfitting issue to some extent compared
+with existing identity-based training. Second, it is free from
+annotations and does not increase the inference time and
+costs since it merely utilizes the synthesized caption at the
+training phase to guide the feature extraction network. After
+training, this caption-guided branch can be removed safely.
+Lastly, our framework is simple yet effective. With synthesized
+caption-guided inversion, our model can better harvest the
+latent corresponding semantic cues in the visual image and
+assist in learning more discriminative representations for ReID
+task. Extensive experiments are conducted on existing popular
+benchmarks and prove the superiority of our methods. For
+instance, on dataset MSMT17, our framework achieved new
+state-of-the-art results, reaching 88.2% in mAP.
+In summary, our contributions are summarized as follows: 1)
+A simple and effective representation learning scheme, which
+is guided by synthesized captions, is proposed for ReID. It can
+derive more expressive and more flexible learning compared
+with existing methods. 2) We design a simple and effective
+framework based on CLIP to fully harvest the correlations
+between visual and semantic features to enhance the model
+deriving discriminative presentations. Experiments on several
+popular datasets prove its effectiveness.
+II. RELATED WORK
+A. Person Re-identification
+Person re-identification (Re-ID) has gained significant at-
+tention due to its applications in intelligent surveillance sys-
+tems [1]. Traditional CNN-based approaches have primarily
+focused on feature learning [16] [17] and metric optimization
+[18] [19] [20] but often struggle with overfitting and irrelevant
+region highlighting. To enhance feature representation, prior
+knowledge has been integrated into networks [21] to extract
+finer-grained features by combining global and local informa-
+tion from pedestrian images. With the advent of the Trans-
+former model, Re-ID has seen improved performance due
+
+
+==================================================
+Page 3
+==================================================
+3
+to its self-attention mechanisms [22] [23] [24] [25], proving
+effective in pedestrian tasks and often outperforming CNNs on
+large-scale public datasets. Notably, TransReID utilizes only
+Transformer architectures, achieving superior results compared
+to CNN models. AAformer introduces a Transformer-based
+framework for the automatic alignment of local regions in Re-
+ID. However, attention mechanisms in existing methods often
+fail to effectively capture discriminative features, particularly
+in the presence of background occlusions, and predominantly
+rely on single visual modalities, neglecting comprehensive
+multi-modal fusion. CLIP-ReID [12] was the first to lever-
+age multi-modal information but primarily optimized image
+encoders without fully exploiting the textual semantic infor-
+mation embedded in the images. PromptSG [26] guides the
+model to focus on semantically relevant regions but falls short
+in capturing critical pedestrian details through simple pseudo
+token learning. In contrast, our approach explicitly extracts
+key person information, enhancing the model’s attention and
+learning capabilities.
+B. Vision-Language learning
+The advent of vision-language models, particularly with
+CLIP, has significantly advanced visual representation learning
+by leveraging extensive image-text datasets. Recent devel-
+opments in large language models (LLMs) [27] [28] have
+further propelled the evolution of Vision-Language Models
+(VLMs), which integrate separately pre-trained LLMs and
+vision foundation models to interpret both images and text.
+LLaVA [13] exemplifies impressive multimodal capabilities
+with minimal additional training. Unlike existing methods that
+rely on LLM-generated large-scale pre-training datasets for
+text-based cross-modal person re-identification [29] [30] [31],
+our approach focuses on employing captions specifically for
+image-based ReID. This methodology aims to exploit the
+semantic information embedded in images rather than de-
+pending solely on pre-existing datasets. Research like CLIP-
+ReID [12] has shown that incorporating language modalities
+enhances visual concept learning and facilitates discriminative
+feature extraction. Our method distinguishes itself by enriching
+cross-modal information through sample-level and feature-
+level operations. We also introduce a novel text filtering
+technique to address inaccuracies in captions generated by
+LLMs, ensuring high accuracy in the synthesized captions used
+in our framework. This approach leverages the capabilities
+of the CLIP model and implements modal fusion techniques
+to integrate this enriched information, thereby enhancing the
+overall performance of image-based ReID.
+C. Representing image as one word
+Textual inversion was first introduced to guide personalized
+generation using a set of user-provided images [14]. By
+learning pseudo-words in the text embedding space of a text-
+to-image generation model, this method captures key concepts
+for personalized output. Beyond text-to-image generation,
+textual inversion has attracted attention in image retrieval,
+especially in zero-shot tasks where it is pre-trained on large,
+unlabeled image datasets [32] [15] [33] [26] . In text-based
+Fig. 2: Caption Generation results. The first row shows the
+captions generated for the Market1501 dataset, while the
+second row depicts the results for the MSMT17 dataset.
+person retrieval, methods like the lightweight Textual Inversion
+Network (TINet) [34] have been developed for cross-modal
+retrieval. In image-based person re-identification, distinguish-
+ing the foreground from the background is key to reduc-
+ing interference. Existing methods struggle with representing
+and integrating visual features effectively. Our approach uses
+captions to guide the generation of pseudo-words, which
+are incorporated into a feature fusion module that combines
+textual and visual data. This enhances the model’s ability
+to learn a more discriminative feature space, improving both
+accuracy and robustness in person re-identification.
+III. METHOD
+In this section, we present a detailed description of our
+caption-guided framework for the person re-identification.
+Fig. 3 gives the overview of our framework. During training,
+our framework takes the two modalities as input: image
+and the corresponding caption pairs. We argue that caption
+embeddings capture the high-level semantic attributes of the
+image and provide more fine-grained supervision than existing
+works based on the category ID index. Yet, existing ReID
+datasets only contain person image data. To augment these
+unimodal datasets into bi-modal ones to enable the training,
+we turn to large pre-trained vision and language models to
+synthesize high-quality captions for each training image.
+A. Synthesized Caption Generation
+The training process of our ReID framework requires image-
+text pairs. However, most existing ReID benchmarks lack text
+modality, and annotating such datasets with textual informa-
+tion is prohibitively expensive. To address this challenge, we
+leverage pretrained large multi-modal models to synthesize
+captions for each training image offline. This approach allows
+us to create a novel bi-modal training set specifically tailored
+for ReID tasks. Any off-the-self image captioning model can
+be leveraged. In this work, we use the strong pretrained model
+LLAVA [13] to extract the semantic attribute information
+contained in the person images. More importantly, it is a
+multimodal instruction-following tool which can generate the
+concept of interests related to the persons in the image. For
+example, as illustrated in Fig. 2, LLAVA provides nuanced
+
+
+==================================================
+Page 4
+==================================================
+4
+Fig. 3: Overview of CLIP-SCGI. It enhances CLIP with two core modules named caption-guided inversion(CGI) and contextual
+feature fusion(CFF) for ReID. The CGI module transforms the images to a pseudo-word under the guidance of captions, while
+the CFF module fuses the pseudo-word embeddings and images to facilitate learning a discriminative global representation.
+descriptions that capture the key aspects of the person’s
+appearance, which significantly contributes to the model’s
+ability to learn discriminative features for ReID.
+Let Ttr = {Ik}K
+k=1 denote the ReID training set, then for
+each image Ik we feed it into LLAVA to generate the cor-
+responding caption Tk. We perform image captioning for the
+whole training set in an offline manner for efficiency, resulting
+in an augmented multi-modal dataset ˆTtr = {(Ik, Tk)}K
+k=1. For
+ReID, person-related fine-grained attributes such as top, pants,
+shoes, and accessories are essential. Therefore, we input the
+instruction to LLAVA by specifying the character information
+while ignoring the irrelevant background. For our experiments,
+the instruction used for captioning is: “Describe the most
+obvious one people using this template for no more than 45
+words: A [age] [gender] is wearing [upper clothes]. [gender]
+is wearing [upper clothes] and [lower clothes]. The [gender]
+is wearing [shoes] and carrying a [others]. The [gender]
+has [hair length] [and whether wear glasses].” With the
+augmented training set ˆTtr, we then train our framework CLIP-
+SCGI under the guidance of synthesized captions.
+B. CLIP-SCGI
+1) Overview: Fig. 3 illustrates the details of our framework.
+As shown, CLIP-SCGI consists of three main components:
+CLIP, CGI (Caption Guided Inversion module), and CFF (Con-
+textual Feature Fusion module). CLIP is used for embedding
+the image and text into an aligned feature space, while CGI
+and CFF support multi-modal training, guiding our model to
+pay attention to the fine-grained semantic information. Below
+we give the details of each component.
+2) CLIP: Similar to CLIP-ReID, our framework leverages
+large pretrained vision and language model CLIP as the
+backbone. In essence, CLIP f(·) consists of an image encoder
+fimg(·) and a text encoder ftxt(·). Given an image-text pair
+(Ik, Tk) ∈ˆT , we feed the image and text into CLIP and obtain
+their corresponding embeddings:
+F k
+img = fimg(Ik),
+F k
+txt = ftxt(Tk)
+(1)
+where F k
+img = {vcls, v1, v2, ..., vM} represents a sequence
+of visual tokens for the input image Ik with vcls being the
+global one and vi being local one, F k
+txt = {tsos, t1, t2, ..., teos}
+denotes the sequence of corresponding text token embeddings
+which includes the extra padded special [SOS] and [EOS]
+tokens. CLIP models have trained on large-scale image and
+text data with contrastive loss, therefore the learned embed-
+dings between text and image are naturally aligned in the same
+feature space.
+3) Caption Guided Inversion Module: After obtaining the
+text and image embeddings with pretrained CLIP models, we
+then design a caption-guided inversion module that distills
+the semantic features in the person image according to the
+synthesized captions, which will be used to train the visual
+encoder for discriminative representations for ReID. This
+strategy is inspired by textual inversion [14]. In essence, the
+objective of textual inversion is to learn an inversion mapping
+fθ(·) from a point in the CLIP image space I to a point in its
+corresponding word embedding input space W:
+fθ : z ∈I →W
+(2)
+Here, I denotes the CLIP embedded image space, T the CLIP
+embedded textual space, zk = hI(Ik) is the embedding of an
+
+
+==================================================
+Page 5
+==================================================
+5
+image Ik into I , and similarly hT (S) is the embedding of
+the caption S into T . W denotes the space used to embed
+input word tokens into CLIP. However, the inversion process
+may result in a pseudo word be disturbed by a lot of irrelevant
+factors such as illuminations, background and weather in the
+image, which may limit the performance.
+To address this issue, we propose textual inversion guided
+by the synthesized captions. Specifically, we first refine the im-
+age features by utilizing a point-wise multiplication operation
+between image and caption embeddings:
+˜v = v ⊙t
+(3)
+where ⊙represents element-wise multiplication. This oper-
+ation aims to adjust the weight of image features based on
+the information conveyed in the accompanying text, thereby
+directing visual attention towards the relevant content de-
+scribed in the text. Besides, the model can effectively alter the
+importance or emphasis of different visual features according
+to the textual context.
+Then we map the reweighed image features into a pseudo-
+word S∗guided by the synthesized captioning embeddings.
+The generation of S∗considers both global and local features.
+The global feature ˜vcls is used to obtain global pseudo-word
+embeddings as tokens S∗
+global = fMg(˜vcls), while the local fea-
+tures {˜v1, ˜v2, . . . , ˜vM} is used to obtain local pseudo-word em-
+beddings as tokens S∗
+local. We condition the prompt generation
+on visual local features ˜vi(i=1, 2, ..., M) through transformers
+layers, as shown in Fig. 3. Formally, we randomly initialize K
+learnable prompt queries Q = {q1, q2, ..., qK} ∈RK×d. Then
+these queries are fed into the transformers blocks, the queries
+served as query(Q), and the local image representations are
+served as key(K) and value(V), which can be formulated as
+follows:
+QC = Q + Cross-Attn(LN(Q, ˜vi, ˜vi))
+(4)
+P = QC + FFN(QC)
+(5)
+where P = {p1, p2, ..., pK} ∈RK×d is the generated prompts,
+Cross-Attention(·) denote the cross-attention operation, respec-
+tively. LN(·) is the Layer Normalization and FFN(·) is the fully
+connected network. The learnable Q can be updated during
+training through gradient back-propagation.
+The local pseudo-word embeddings are obtained by tokens
+S∗
+local = fMl(Avg(P)). These local pseudo-word embeddings
+are then combined with the global pseudo-word embeddings
+to form the pseudo-word S∗= S∗
+global + S∗
+local. fMg and
+fMl is a three-layered fully-connected network. Following
+this, it is concatenated with the token embeddings of the
+prompt sentence, ”a photo of a person”, thereby forming
+the augmented prompt sequence
+ˆS∗=” a photo of a S∗
+person”. Subsequently, ˆS∗is passed through the text encoder
+to generate textual inversion embeddings {ˆtsos, ˆt1, ˆt2, ..., ˆteos},
+which can represent an input image embedding. we propose
+to minimize the contrastive loss with respect to the mapping
+network.
+Lcon = Lt2i + Li2t
+(6)
+Lt2i(T, I) = −1
+P
+X
+i∈P
+log
+exp(s(Ti, Ip))
+PB
+k=1exp(s(Ti, Ik))
+(7)
+Li2t(I, T) = −1
+P
+X
+i∈P
+log
+exp(s(Ii, Tp))
+PB
+k=1exp(s(Ii, Tk))
+(8)
+where P represents the set of positive samples, s(Ti, Ii) =
+Ti·Ii refers to the similarity function that evaluates the distance
+between text and image.
+4) Contextual Feature Fusion: To enable comprehensive
+interaction between image and text modalities, we intro-
+duce a multi-model fusion module [35]. The multi-model
+interaction encoder consists of a multi-head cross-attention
+layer and 2-layer transformer blocks. The text representation
+{ˆtsos, ˆt1, ˆt2, ..., ˆteos} served as query(Q), and the image rep-
+resentation vcls are served as key(K) and value(V). The full
+interaction between image and text representations can be
+achieved by:
+h = Transformer(Cross-Attn(LN(Q, K, V )))
+(9)
+where h is the fused image and text contextual representations,
+LN(·) denotes Layer Normalization, and Cross-Attn(·) is the
+multi-head cross attention and can be realized by:
+Cross-Attn(Q, K, V ) = softmax(QKT
+√
+d
+)V
+(10)
+where d is the embedding dimension of tokens. After the
+fusion of image and text contextual representations, we employ
+the resulting features to compute cross-entropy loss.
+C. Optimization and Inference
+We employ the identity classification loss Lid and triplet
+loss Ltri [36] for optimization:
+Lid =
+N
+X
+k=1
+−qklog(pk)
+(11)
+Ltri = max(dp −dn + α, 0)
+(12)
+Here, p represents the logits distribution obtained by the
+classifier, q represents the ground truth distribution, and N
+is the total number of instances. During the inference process,
+for efficiency reasons, our captioning method only utilizes the
+phrase ”a photo of a person” without employing additional
+captioning techniques to generate captions for the images.
+Therefore, the caption-guided branch can be removed safely
+without incurring extra computation costs during inference.
+The total loss to train our framework is given by the following
+equation:
+L = Lid + Ltri + Lcon
+(13)
+IV. EXPERIMENT
+A. Experiment Setup
+1) Datasets and Evaluation Protocol: We evaluate our
+method on four popular person re-identification datasets,
+including Market-1501 [50], MSMT17 [51], DukeMTMC-
+reID [52], and Occluded-Duke [53].
+Market-1501 comprises a large-scale collection of images
+captured from a market setting. It contains 32,668 annotated
+bounding boxes of 1,501 identities, captured by six cameras.
+
+
+==================================================
+Page 6
+==================================================
+6
+TABLE I: Comparison with the state-of-the-art CNN- and ViT-based models on Market-1501, MSMT17, DukeMTMC, and
+OccDuke datasets. The superscript star* means that the input image is resized to a resolution larger than 256x128. Note that
+all data listed here are without re-ranking.
+Backbone
+Method
+Reference
+MSMT17
+Market-1501
+DukeMTMC-reID
+Occluded-Duke
+mAP
+top-1
+mAP
+top-1
+mAP
+top-1
+mAP
+top-1
+CNN
+OSNeT* [37]
+ICCV 2019
+52.9
+78.7
+84.9
+94.8
+73.5
+88.6
+-
+-
+Auto-ReID* [38]
+ICCV 2019
+52.5
+78.2
+85.1
+94.5
+-
+-
+-
+-
+HOReID [39]
+CVPR 2020
+-
+-
+84.9
+94.2
+75.6
+86.9
+43.8
+55.1
+ISP [40]
+ECCV 2021
+-
+-
+88.6
+95.3
+80.0
+89.6
+52.3
+62.8
+CDNet [41]
+CVPR 2021
+54.7
+78.9
+86.0
+95.1
+76.8
+88.6
+-
+-
+PAT [42]
+CVPR 2021
+-
+-
+88.0
+95.4
+78.2
+88.8
+53.6
+64.5
+CAL* [43]
+ICCV 2021
+56.2
+79.5
+87.0
+94.5
+76.4
+87.2
+-
+-
+CBDB-Net* [44]
+TCSVT 2021
+-
+-
+85.0
+94.4
+74.3
+87.7
+38.9
+50.9
+ALDER* [45]
+TIP 2021
+59.1
+82.5
+88.9
+95.6
+78.9
+89.9
+-
+-
+LTReID* [46]
+TMM 2022
+59.1
+82.5
+88.9
+95.6
+78.9
+90.5
+-
+-
+DRL-Net [47]
+TMM 2022
+55.3
+78.4
+86.9
+94.7
+76.6
+88.1
+50.8
+65.0
+baseline
+60.7
+82.1
+88.1
+94.7
+79.3
+88.6
+47.4
+54.2
+CLIP-ReID [12]
+AAAI 2023
+63.0
+84.4
+89.8
+95.7
+80.7
+90.0
+53.5
+61.0
+PromptSG [26]
+CVPR 2024
+68.5
+86.0
+91.8
+96.6
+80.4
+90.2
+-
+-
+Ours
+——
+80.9
+87.9
+92.1
+95.7
+77.7
+89.0
+47.4
+60.4
+ViT
+TransReID [22]
+ICCV 2021
+67.4
+85.3
+88.9
+95.2
+82.0
+90.7
+59.2
+66.4
+AAformer* [23]
+arxiv 2021
+63.2
+83.6
+87.7
+95.4
+80.0
+90.1
+58.2
+67.0
+DCAL [48]
+CVPR 2022
+64.0
+83.1
+87.5
+94.7
+80.1
+89.0
+-
+-
+PHA [49]
+CVPR 2023
+68.9
+86.1
+90.2
+96.1
+-
+-
+-
+-
+baseline
+66.1
+84.4
+86.4
+93.3
+80.0
+88.8
+53.5
+60.8
+CLIP-ReID [12]
+AAAI 2023
+73.4
+88.7
+89.6
+95.5
+82.5
+90.0
+59.5
+67.1
+PromptSG [26]
+CVPR 2024
+87.2
+92.6
+94.6
+97.0
+81.6
+91.0
+-
+-
+Ours
+——
+88.2
+92.9
+96.0
+97.6
+81.6
+91.3
+59.2
+67.5
+The dataset is divided into a training set with 12,936 images
+and a testing set with 19,732 images.
+MSMT17 is a large-scale person re-identification dataset
+collected from real-world scenarios. It consists of 126,441
+images of 4,101 identities captured by 15 cameras. The dataset
+provides a training set with 32,621 images, a query set with
+11,659 images, and a gallery set with 82,161 images.
+DukeMTMC-reID is collected from the DukeMTMC
+project, which includes 8 high-resolution cameras covering
+different scenes. It comprises 36,411 images of 1,812 iden-
+tities, divided into a training set with 16,522 images, a query
+set with 2,228 images, and a gallery set with 17,661 images.
+Occluded-Duke is a variant of the DukeMTMC-reID
+dataset, which contains occlusion annotations. It includes
+36,411 images of 1,812 identities, with occlusion annotations
+provided for 10,056 images. The dataset is divided into a
+training set with 16,522 images, a query set with 2,228 images,
+and a gallery set with 17,661 images.
+We utilize the Cumulative Matching Characteristics (CMC)
+at Rank-1 (R1) and the mean average precision (mAP) as
+evaluation metrics to assess performance. Rank-1 (R1) refers
+to the accuracy metric in which the top-ranked candidate is
+considered correct. While mean Average Precision (mAP) is
+employed as a comprehensive evaluation metric that empha-
+sizes the relative ranking and order of the retrieved results.
+2) Implementation Details: We utilize the image and text
+encoder with CLIP, and choose ResNet-50 and Vit-B-16 as
+the image encoder for the experiments, respectively. The
+maximum length of input sentences is set to 77. All person
+images are resized to 256 × 128. The batch size is set to
+64 with 4 images per ID. The training images are augmented
+with random horizontal flipping, padding, random cropping,
+and random erasing. The image and text encoders are initial-
+ized with pretrained CLIP. The initial learning rate is set to
+5 × 10−6. For modules with random initialization, the initial
+learning rate is set to 5×10−5. We warm up the model for 10
+epochs with a linearly growing learning rate from 5 × 10−7
+to 5 × 10−6. The batch size is set to 64 with 4 images per
+identity. For the CNN-based model, We train the network for
+120 epochs, then the learning rate is decayed by 0.1 at the
+40th and 70th epochs. For the ViT-based model, We train the
+network for 60 epochs employing the Adam optimizer, which
+is decayed by a factor of 0.1 every 20 epochs. We extract
+the features from the lase layer of CFF module in CNN and
+VIT models, respectively, as the embeddings of each person
+image for ReID task. All experiments are conducted on a
+single NVIDIA V100 GPU.
+
+
+==================================================
+Page 7
+==================================================
+7
+TABLE II: Comparative Analysis of Parameter Count, Train-
+ing Times, and mAP between CLIP-ReID and CLIP-SCGI
+(our method) on Market-1501 and MSMT17 datasets.
+Dataset
+Method
+#Params
+Training Times
+mAP
+Market-1501
+CLIP-ReID
+89M
+4689s
+89.6
+CLIP-SCGI
+113M
+4451s
+96.0
+MSMT17
+CLIP-ReID
+90M
+12904s
+73.4
+CLIP-SCGI
+113M
+13534s
+88.2
+B. Comparison with State-of-the-arts
+Table I presents a comprehensive comparison of our
+proposed method with state-of-the-art approaches on vari-
+ous benchmark datasets including Market1501, MSMT17,
+DukeMTMC, and OccDuke. We evaluate the performance
+in terms of mean Average Precision (mAP) and Rank-1
+(R1) accuracy. Our proposed method demonstrates superior
+performance compared to state-of-the-art approaches across
+all benchmark datasets, indicating its effectiveness in person
+re-identification tasks. Note that all data listed here are with-
+out re-ranking. As presented in Table 1, compared with the
+ViT-based method, the results of our method on the most
+challenging dataset MSMT17 achieves 88.2% and 92.9% on
+Rank-1 and mAP, respectively, surpassing previous state-of-
+the-art results. Especially, when compared with PromptSG
+which also leverages CLIP, we outperform it by 1.0% and
+0.3% in Rank-1 and mAP, respectively. Our framework also
+demonstrates superior performance when adopting CNN as the
+backbone, largely outperforming its counterparts. Specially,
+Our method achieves 80.9% mAP and 87.9% R1, which are
+12.4% and 1.9% higher than PromptSG. On other datasets,
+such as Market1501, DukeMTMC-reID, and Occluded-Duke,
+we achieve improvements in Rank-1 performance of 2.1%,
+1.3%, and 0.4%, respectively, when using the ViT-based
+backbone compared to CLIP-ReID. These results consistently
+demonstrate the superiority of CLIP-SCGI.
+C. Comparison of training efficiency
+As shown in Table II, we compared CLIP-ReID and our
+proposed method, CLIP-SCGI, in terms of parameter count,
+training time, and accuracy on the Market-1501 and MSMT17
+datasets. Despite CLIP-SCGI having a 26% higher parameter
+count than CLIP-ReID, we observed no increase in training
+time for our one-stage approach compared to the two-stage
+CLIP-ReID.
+Furthermore, our method demonstrates significant improve-
+ments in accuracy. CLIP-SCGI achieved mAP scores of 96.0%
+on Market-1501 and 88.2% on MSMT17, surpassing CLIP-
+ReID’s scores of 89.6% and 73.4%, respectively. These re-
+sults indicate that our one-stage training approach not only
+maintains training efficiency despite the increased parameter
+complexity but also achieves substantially higher accuracy
+compared to the conventional two-stage training of CLIP-
+ReID.
+TABLE III: Ablation of each component of CLIP-SCGI on
+Market-1501 and MSMT17.
+No.
+Components
+Market-1501
+MSMT17
+CGI
+CFF
+mAP
+R1
+mAP
+R11
+1
+✓
+89.6
+95.5
+71.5
+87.6
+2
+✓
+93.6
+95.6
+85.2
+90.9
+3
+✓
+✓
+96.0
+97.6
+88.2
+92.9
+D. Ablation Studies
+We perform comprehensive ablation studies on MSMT17
+and Market-1501 to scrutinize the impacts of major parts and
+all the experiments are conducted on ViT-B/16.
+1) Ablation on the CGI module: To gain deeper insights
+into the effectiveness of pseudo tokens S∗in providing fine-
+grained guidance for visual embeddings, we removed the CGI
+module and exclusively utilized “a photo of a person” as the
+input for the fusion module. Results presented in Table III,
+No.2 vs. No.3 indicate a substantial impact of incorporating
+S∗on both mAP and R1 metrics. When S∗is included
+during training (No.3) model achieves higher performance
+compared to when S∗is excluded (No.2). Removal of S∗
+during training resulted in a decrease in mAP of 2.4% and
+3% on the Market1501 and MSMT17 datasets, and a decrease
+of 2% on R1 for both datasets. These results demonstrate
+the importance of CGI in guiding the process of learning
+discriminative representations for ReID.
+2) Ablation on the CFF module: The effectiveness of the
+Contextual Feature Fusion module lies in its ability to facilitate
+better feature-level modal fusion. As shown in Table III, No.1
+vs. No.3 compares the effectiveness of adding the Contextual
+Feature Fusion module. The first row represents a scenario
+where only the augmented training set is utilized, followed by
+supervised contrastive losses Lcon applied to the encoding of
+images and ”a photo of a S∗person”, without the addition
+of the fusion module. Compared to our full model, this
+approach results in a larger decrease in performance, further
+emphasizing the necessity of feature-level fusion. The CFF
+module effectively combines textual and image information,
+utilizing the semantic insights from textual descriptions and
+the visual features from images. This fusion results in a
+richer, more discriminative feature space, leading to improved
+accuracy and robustness in person re-identification.
+3) Impact of semantic guidance in the CFF module: In the
+feature fusion stage, we use semantic textual information ”a
+photo of a S∗person” as the query Q for fusion. However, one
+may be curious: can one exploit the visual features? To verify
+its effectiveness, we further conduct experiments by replacing
+it with image features. Table IV reports the results. As shown,
+the replacement of the query with image features resulted in a
+decrease in mean Average Precision (mAP) of 1.9%, 1.5%, and
+4.7 on the Market1501, MSMT17, and DukeMTMC datasets,
+respectively. Additionally, there was a reduction of 0.9%, 0.4%
+and 1.8 % in Rank-1 accuracy for both datasets. These results
+indicate that changing the query from textual information
+to image features significantly impacts the performance of
+the person-identification system. This emphasizes the pivotal
+
+
+==================================================
+Page 8
+==================================================
+8
+TABLE IV: Ablation of replacing Q with image features in
+CFF.
+Method
+Market-1501
+MSMT17
+DukeMTMC
+mAP
+R1
+mAP
+R1
+mAP
+R1
+96.0
+97.6
+88.2
+92.9
+81.5
+90.6
+replace Q
+94.1
+96.7
+86.7
+92.5
+76.8
+88.8
+role of semantic guidance, where textual information directs
+the model’s attention to relevant image regions, focusing on
+individuals rather than background elements. By leveraging
+this semantic guidance, our model achieves improved accuracy
+in re-identification tasks, as it gains a deeper understanding of
+the nuanced characteristics and attributes of individuals de-
+picted in the image. This enables more effective matching and
+recognition of individuals across different images, ultimately
+enhancing the performance of our re-identification system,
+thereby facilitating more accurate person re-identification by
+minimizing the influence of irrelevant background elements.
+4) Impact of CGI depth and number of learnable queries:
+We evaluate the influence of varying the depth of the CGI
+module. As shown in Fig. 4, our results reveal that a depth
+of 5 achieves the highest mAP, while a depth of 6 leads
+to the highest R1 performance. However, considering both
+performance and efficiency, we find that a depth of 1 strikes
+a favorable balance. We performed an additional ablation
+experiment on the length of the learnable prompt qK. As
+shown in Fig. 4b, the range of qK is 1, 2, 4, 8. Setting the
+prompt length to 2 resulted in optimal performance.
+(a)
+(b)
+Fig. 4: The impact of the hyper-parameters at R1 and mAP
+on Market-1501, including (a) effects of CGI depth(left) ;
+(b) the number of learnable queries(right). The dark blue line
+represents R1, while the light blue line represents mAP.
+E. Visualization
+1) Retrieval result visualization: Fig. 5 exhibits two exam-
+ples of top-10 retrieval results, where the first row and the sec-
+ond row present the results from our method and CLIP-ReID,
+respectively. Our method exhibits a notable enhancement as
+it excels in retrieving more challenging samples subsequently.
+The first example demonstrates a compelling contrast, indicat-
+ing our method’s robustness even under challenging conditions
+such as blurriness and low lighting. Remarkably, our approach
+manages to accurately identify subjects despite the adverse
+conditions, showcasing its capability for reliable recognition
+in real-world scenarios. Moreover, the second example in the
+Fig. 5: Comparison of top-10 retrieved results on MSMT17
+dataset between our method (the first row) and CLIP-ReID
+(the second row) for each query. The incorrectly identified
+samples are highlighted in red.
+results sheds light on another crucial aspect of our method’s
+superiority. Even in scenarios where the person is similar, our
+method showcases its ability to discern subtle differences in
+features such as hair length and clothing, which are pivotal
+for accurate identification. This highlights the efficacy of our
+approach in capturing intricate details and leveraging them
+for precise recognition, surpassing the capabilities of existing
+methods like CLIP-ReID.
+2) Attention map visualization: To provide a more intu-
+itive demonstration of the results, we conducted visualization
+experiments using the method [54] to illustrate the model’s
+focused areas. As is shown in Fig. 6, in the depicted images,
+the top row represents examples from the Market-1501 dataset,
+while the bottom row showcases instances from the MSMT17
+dataset. It is evident that while the CLIP-ReID method can
+generally attend to the approximate locations of pedestrians,
+it falls short of capturing fine-grained details. Specifically, it
+struggles to identify crucial features of certain pedestrians,
+such as shoes, backpacks, and other distinguishing character-
+istics. These details are often pivotal for accurate identifica-
+tion, especially in challenging scenarios such as images with
+obscured or blurry backgrounds. In contrast, our approach,
+by incorporating semantic information, demonstrates superior
+capability in capturing detailed information and guiding the
+network to focus more precisely on pedestrians. This includes
+differentiating various body parts of pedestrians while disre-
+garding the influences from the background, thus mitigating
+potential interference in the identification process.
+V. DISCUSSION
+A. Limitations Due to Occlusion on Caption Quality
+As shown in Figure 7, there are examples of three pedes-
+trians in the dataset. The first row illustrates the captions gen-
+
+
+==================================================
+Page 9
+==================================================
+9
+(a)
+(b)
+(c)
+(d)
+(a)
+(b)
+(c)
+(d)
+Fig. 6: Attention map visualization on sample images from
+Market-1501 (top) and MSMT17 (bottom), respectively. (a)
+Input images, (b) baseline, (c) CLIP-ReID, (d) our CLIP-
+SCGI.
+erated under normal circumstances without occlusion. These
+captions can accurately capture the characteristics of the
+pedestrians in the picture, including gender, clothing, and
+other details. In contrast, the second row highlights the severe
+occlusion scenarios in the dataset where pedestrians are either
+nearly invisible due to intense obstructions or completely
+obscured by other individuals.
+The limitations of image captions become noticeable here,
+as they struggle to accurately capture the facial characteristics
+or attributes of the obscured pedestrians. This can result in
+slightly inaccurate or less descriptive pseudo-words S∗from
+the caption-guided inversion module. Caption inaccuracies
+can introduce subtle noise, potentially affecting the guidance
+for cross-modal fusion. As a result, the training process
+may encounter challenges in learning meaningful correlations
+between image and text embeddings, which could modestly
+impact the model’s performance.
+In summary, the accuracy of caption generation in occlusion
+scenarios is an area for improvement, ensuring better caption
+quality could further enhance the robustness of our model in
+addressing the complexities of occluded ReID tasks.
+VI. CONCLUSIONS
+In conclusion, we present a novel approach to address-
+ing the challenge of implicit text embeddings in person re-
+identification (Re-ID) by utilizing existing image captioning
+models to generate explicit descriptions for person images.
+By leveraging large vision-language models like LLAVA, we
+augment the traditional ReID training dataset from a unimodal
+(image) to a bimodal (text and image) framework, facilitating
+the efficient training of CLIP for ReID. Our proposed CLIP-
+SCGI framework is both simple and effective, employing
+synthesized captions to guide the learning of ID-specific em-
+beddings, thereby enhancing the extraction of discriminative
+and robust representations through language guidance. By
+embedding text and images into a joint space and incorporating
+a caption-guided inversion module, we enable the capture
+of corresponding semantic attributes within the visual im-
+ages, leading to improved feature extraction and cross-modal
+Fig. 7: Caption Generation results on Occluded-Duke dataset.
+The figure illustrates examples of three pedestrians from
+the dataset. The first row showcases correct caption results,
+while the second row demonstrates captions generated under
+complete occlusion scenarios.
+fusion. Extensive experiments on four widely recognized
+ReID benchmarks demonstrate the efficacy of our framework,
+revealing significant performance enhancements over state-
+of-the-art methods. Our approach not only streamlines the
+training process by providing concrete descriptions for person
+images but also achieves superior outcomes, underscoring
+its potential to advance the field of person re-identification.
+However, our framework currently depends on offline image
+captioning models for generating high-quality captions. Future
+work will explore methods to eliminate this intermediary
+step by utilizing implicit text embeddings from large pre-
+trained multimodal models, thereby removing the necessity
+for explicit caption generation.
+
+
+==================================================
+Page 10
+==================================================
+10
+REFERENCES
+[1] M. Ye, J. Shen, G. Lin, T. Xiang, L. Shao, and S. C. H. Hoi, “Deep
+learning for person re-identification: A survey and outlook,” TPAMI,
+vol. 44, no. 6, pp. 2872–2893, 2022.
+[2] M. S. Sarfraz, A. Schumann, A. Eberle, and R. Stiefelhagen, “A pose-
+sensitive embedding for person re-identification with expanded cross
+neighborhood re-ranking,” in CVPR, 2018, pp. 420–429.
+[3] H. Huang, D. Li, Z. Zhang, X. Chen, and K. Huang, “Adversarially
+occluded samples for person re-identification,” in CVPR, 2018, pp.
+5098–5107.
+[4] C. Song, Y. Huang, W. Ouyang, and L. Wang, “Mask-guided contrastive
+attention model for person re-identification,” in CVPR, 2018, pp. 1179–
+1188.
+[5] M. Geng, Y. Wang, T. Xiang, and Y. Tian, “Deep transfer learning for
+person re-identification,” arXiv preprint arXiv:1611.05244, 2016.
+[6] Y. Sun, L. Zheng, W. Deng, and S. Wang, “Svdnet for pedestrian
+retrieval,” in ICCV, 2017, pp. 3800–3808.
+[7] D. Cheng, Y. Gong, S. Zhou, J. Wang, and N. Zheng, “Person re-
+identification by multi-channel parts-based cnn with improved triplet
+loss function,” in CVPR, 2016, pp. 1335–1344.
+[8] D. Li, X. Chen, Z. Zhang, and K. Huang, “Learning deep context-aware
+features over body and latent parts for person re-identification,” in CVPR,
+2017, pp. 384–393.
+[9] S. Liao, Y. Hu, X. Zhu, and S. Z. Li, “Person re-identification by local
+maximal occurrence representation and metric learning,” in CVPR, 2015,
+pp. 2197–2206.
+[10] A. Hermans, L. Beyer, and B. Leibe, “In defense of the triplet loss for
+person re-identification,” arXiv preprint arXiv:1703.07737, 2017.
+[11] A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal,
+G. Sastry, A. Askell, P. Mishkin, J. Clark et al., “Learning transferable
+visual models from natural language supervision,” in ICML.
+PMLR,
+2021, pp. 8748–8763.
+[12] S. Li, L. Sun, and Q. Li, “Clip-reid: exploiting vision-language model
+for image re-identification without concrete text labels,” in AAAI, vol. 37,
+no. 1, 2023, pp. 1405–1413.
+[13] H. Liu, C. Li, Q. Wu, and Y. J. Lee, “Visual instruction tuning,” NeurIPS,
+vol. 36, 2024.
+[14] R. Gal, Y. Alaluf, Y. Atzmon, O. Patashnik, A. H. Bermano,
+G. Chechik, and D. Cohen-Or, “An image is worth one word: Person-
+alizing text-to-image generation using textual inversion,” arXiv preprint
+arXiv:2208.01618, 2022.
+[15] A. Baldrati, L. Agnolucci, M. Bertini, and A. Del Bimbo, “Zero-shot
+composed image retrieval with textual inversion,” in ICCV, 2023, pp.
+15 338–15 347.
+[16] L. Zhao, X. Li, Y. Zhuang, and J. Wang, “Deeply-learned part-aligned
+representations for person re-identification,” in ICCV, 2017, pp. 3219–
+3228.
+[17] H. Yao, S. Zhang, R. Hong, Y. Zhang, C. Xu, and Q. Tian, “Deep
+representation learning with part loss for person re-identification,” TIP,
+vol. 28, no. 6, pp. 2860–2871, 2019.
+[18] S. Li, M. Shao, and Y. Fu, “Person re-identification by cross-view multi-
+level dictionary learning,” TPAMI, vol. 40, no. 12, pp. 2963–2977, 2017.
+[19] M. Koestinger, M. Hirzer, P. Wohlhart, P. M. Roth, and H. Bischof,
+“Large scale metric learning from equivalence constraints,” in CVPR.
+IEEE, 2012, pp. 2288–2295.
+[20] S. Liao, Y. Hu, X. Zhu, and S. Z. Li, “Person re-identification by local
+maximal occurrence representation and metric learning,” in CVPR, 2015,
+pp. 2197–2206.
+[21] Y. Sun, L. Zheng, Y. Yang, Q. Tian, and S. Wang, “Beyond part models:
+Person retrieval with refined part pooling (and a strong convolutional
+baseline),” in ECCV, 2018, pp. 480–496.
+[22] S. He, H. Luo, P. Wang, F. Wang, H. Li, and W. Jiang, “Transreid:
+Transformer-based object re-identification,” in ICCV, 2021, pp. 15 013–
+15 022.
+[23] K. Zhu, H. Guo, S. Zhang, Y. Wang, J. Liu, J. Wang, and M. Tang,
+“Aaformer: Auto-aligned transformer for person re-identification,”
+TNNLS, pp. 1–11, 2023.
+[24] H. Li, M. Ye, C. Wang, and B. Du, “Pyramidal transformer with conv-
+patchify for person re-identification,” in ACM MM, 2022, pp. 7317–
+7326.
+[25] G. Zhang, P. Zhang, J. Qi, and H. Lu, “Hat: Hierarchical aggregation
+transformers for person re-identification,” in ACM MM, 2021, pp. 516–
+525.
+[26] Z. Yang, D. Wu, C. Wu, Z. Lin, J. Gu, and W. Wang, “A pedestrian is
+worth one prompt: Towards language guidance person re-identification,”
+in CVPR, 2024, pp. 17 343–17 353.
+[27] C. Raffel, N. Shazeer, A. Roberts, K. Lee, S. Narang, M. Matena,
+Y. Zhou, W. Li, and P. J. Liu, “Exploring the limits of transfer learning
+with a unified text-to-text transformer,” JMLR, vol. 21, no. 140, pp.
+1–67, 2020.
+[28] T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal,
+A. Neelakantan, P. Shyam, G. Sastry, A. Askell et al., “Language models
+are few-shot learners,” NeurIPS, vol. 33, pp. 1877–1901, 2020.
+[29] S. Yang, Y. Zhou, Z. Zheng, Y. Wang, L. Zhu, and Y. Wu, “Towards
+unified text-based person retrieval: A large-scale multi-attribute and
+language search benchmark,” in ACM MM, 2023, pp. 4492–4501.
+[30] Z. Shao, X. Zhang, C. Ding, J. Wang, and J. Wang, “Unified pre-training
+with pseudo texts for text-to-image person re-identification,” in ICCV,
+2023, pp. 11 174–11 184.
+[31] W. Tan, C. Ding, J. Jiang, F. Wang, Y. Zhan, and D. Tao, “Harnessing
+the power of mllms for transferable text-to-image person reid,” in CVPR,
+2024, pp. 17 127–17 137.
+[32] K. Saito, K. Sohn, X. Zhang, C.-L. Li, C.-Y. Lee, K. Saenko, and
+T. Pfister, “Pic2word: Mapping pictures to words for zero-shot composed
+image retrieval,” in CVPR, 2023, pp. 19 305–19 314.
+[33] Y. Tang, J. Yu, K. Gai, J. Zhuang, G. Xiong, Y. Hu, and Q. Wu, “Context-
+i2w: Mapping images to context-dependent words for accurate zero-shot
+composed image retrieval,” in AAAI, vol. 38, no. 6, 2024, pp. 5180–5188.
+[34] D. Liu, H. Li, Z. Zhao, F. Su, and H. Meng, “Word for person: Zero-shot
+composed person retrieval,” arXiv preprint arXiv:2311.16515, 2023.
+[35] Z.-Y. Dou, Y. Xu, Z. Gan, J. Wang, S. Wang, L. Wang, C. Zhu, P. Zhang,
+L. Yuan, N. Peng et al., “An empirical study of training end-to-end
+vision-and-language transformers,” in CVPR, 2022, pp. 18 166–18 176.
+[36] L. He, X. Liao, W. Liu, X. Liu, P. Cheng, and T. Mei, “Fastreid: A
+pytorch toolbox for general instance re-identification,” in ACM MM,
+2023, pp. 9664–9667.
+[37] K. Zhou, Y. Yang, A. Cavallaro, and T. Xiang, “Omni-scale feature
+learning for person re-identification,” in ICCV, 2019, pp. 3702–3712.
+[38] R. Quan, X. Dong, Y. Wu, L. Zhu, and Y. Yang, “Auto-reid: Searching
+for a part-aware convnet for person re-identification,” in ICCV, 2019,
+pp. 3750–3759.
+[39] G. Wang, S. Yang, H. Liu, Z. Wang, Y. Yang, S. Wang, G. Yu, E. Zhou,
+and J. Sun, “High-order information matters: Learning relation and
+topology for occluded person re-identification,” in CVPR, 2020, pp.
+6449–6458.
+[40] K. Zhu, H. Guo, Z. Liu, M. Tang, and J. Wang, “Identity-guided human
+semantic parsing for person re-identification,” in ECCV. Springer, 2020,
+pp. 346–363.
+[41] H. Li, G. Wu, and W.-S. Zheng, “Combined depth space based architec-
+ture search for person re-identification,” in CVPR, 2021, pp. 6729–6738.
+[42] Y. Li, J. He, T. Zhang, X. Liu, Y. Zhang, and F. Wu, “Diverse part dis-
+covery: Occluded person re-identification with part-aware transformer,”
+in CVPR, 2021, pp. 2898–2907.
+[43] Y. Rao, G. Chen, J. Lu, and J. Zhou, “Counterfactual attention learning
+for fine-grained visual categorization and re-identification,” in ICCV,
+2021, pp. 1025–1034.
+[44] H. Tan, X. Liu, Y. Bian, H. Wang, and B. Yin, “Incomplete descriptor
+mining with elastic loss for person re-identification,” TCSVT, vol. 32,
+no. 1, pp. 160–171, 2021.
+[45] Q. Zhang, J. Lai, Z. Feng, and X. Xie, “Seeing like a human: Asyn-
+chronous learning with dynamic progressive refinement for person re-
+identification,” TIP, vol. 31, pp. 352–365, 2021.
+[46] P. Wang, Z. Zhao, F. Su, and H. Meng, “Ltreid: Factorizable feature
+generation with independent components for long-tailed person re-
+identification,” TMM, vol. 25, pp. 4610–4622, 2022.
+[47] M. Jia, X. Cheng, S. Lu, and J. Zhang, “Learning disentangled represen-
+tation implicitly via transformer for occluded person re-identification,”
+TMM, vol. 25, pp. 1294–1305, 2022.
+[48] H. Zhu, W. Ke, D. Li, J. Liu, L. Tian, and Y. Shan, “Dual cross-
+attention learning for fine-grained visual categorization and object re-
+identification,” in CVPR, 2022, pp. 4692–4702.
+[49] G. Zhang, Y. Zhang, T. Zhang, B. Li, and S. Pu, “Pha: Patch-wise high-
+frequency augmentation for transformer-based person re-identification,”
+in CVPR, 2023, pp. 14 133–14 142.
+[50] L. Zheng, L. Shen, L. Tian, S. Wang, J. Wang, and Q. Tian, “Scalable
+person re-identification: A benchmark,” in ICCV, 2015, pp. 1116–1124.
+[51] L. Wei, S. Zhang, W. Gao, and Q. Tian, “Person transfer gan to bridge
+domain gap for person re-identification,” in CVPR, 2018, pp. 79–88.
+[52] Z. Zheng, L. Zheng, and Y. Yang, “Unlabeled samples generated by gan
+improve the person re-identification baseline in vitro,” in ICCV, 2017,
+pp. 3754–3762.
+
+
+==================================================
+Page 11
+==================================================
+11
+[53] J. Miao, Y. Wu, P. Liu, Y. Ding, and Y. Yang, “Pose-guided feature
+alignment for occluded person re-identification,” in ICCV, 2019, pp.
+542–551.
+[54] H. Chefer, S. Gur, and L. Wolf, “Generic attention-model explainability
+for interpreting bi-modal and encoder-decoder transformers,” in ICCV,
+2021, pp. 397–406.

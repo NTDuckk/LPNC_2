@@ -407,28 +407,9 @@ class Transformer(nn.Module):
         super().__init__()
         self.width = width
         self.layers = layers
-        self.grad_checkpointing = False
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
-    def forward(self, x):
-        if self.grad_checkpointing and self.training:
-            for block in self.resblocks:
-                if isinstance(x, (list, tuple)):
-                    h = x[0]
-                    def _make_ckpt_fn(module):
-                        def _forward(hidden_state):
-                            out = module([hidden_state])
-                            return out[0], out[1]
-                        return _forward
-                    out_h, out_att = torch.utils.checkpoint.checkpoint(
-                        _make_ckpt_fn(block), h, use_reentrant=False
-                    )
-                    x = [out_h, out_att]
-                else:
-                    x = torch.utils.checkpoint.checkpoint(
-                        block, x, use_reentrant=False
-                    )
-            return x
+    def forward(self, x: torch.Tensor):
         return self.resblocks(x)
 
 

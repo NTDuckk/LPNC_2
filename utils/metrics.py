@@ -1,20 +1,22 @@
+import logging
 from prettytable import PrettyTable
+
 import torch
 import torch.nn.functional as F
-import logging
-
-from utils.reranking import re_ranking
 from torch.cuda.amp import autocast
 
 
 def rank(similarity, q_pids, g_pids, max_rank=10, get_mAP=True):
+    """
+    similarity: torch.Tensor [num_query, num_gallery]
+    q_pids/g_pids: torch.Tensor [num_query] / [num_gallery]
+    """
     if get_mAP:
-        similarity = torch.tensor(similarity)
+        similarity = torch.tensor(similarity) if not torch.is_tensor(similarity) else similarity
         indices = torch.argsort(similarity, dim=1, descending=True)
     else:
-        _, indices = torch.topk(
-            similarity, k=max_rank, dim=1, largest=True, sorted=True
-        )
+        _, indices = torch.topk(similarity, k=max_rank, dim=1, largest=True, sorted=True)
+
     pred_labels = g_pids[indices.cpu()]
     matches = pred_labels.eq(q_pids.view(-1, 1))
 
@@ -28,7 +30,8 @@ def rank(similarity, q_pids, g_pids, max_rank=10, get_mAP=True):
     num_rel = matches.sum(1)
     tmp_cmc = matches.cumsum(1)
 
-    inp = [tmp_cmc[i][match_row.nonzero()[-1]] / (match_row.nonzero()[-1] + 1.) for i, match_row in enumerate(matches)]
+    inp = [tmp_cmc[i][match_row.nonzero()[-1]] / (match_row.nonzero()[-1] + 1.0)
+           for i, match_row in enumerate(matches)]
     mINP = torch.cat(inp).mean() * 100
 
     tmp_cmc = [tmp_cmc[:, i] / (i + 1.0) for i in range(tmp_cmc.shape[1])]
@@ -40,77 +43,165 @@ def rank(similarity, q_pids, g_pids, max_rank=10, get_mAP=True):
 
 
 def get_metrics(similarity, qids, gids, n_, retur_indices=False):
-    t2i_cmc, t2i_mAP, t2i_mINP, indices = rank(similarity=similarity, q_pids=qids, g_pids=gids, max_rank=10, get_mAP=True)
+    t2i_cmc, t2i_mAP, t2i_mINP, indices = rank(
+        similarity=similarity, q_pids=qids, g_pids=gids, max_rank=10, get_mAP=True
+    )
     t2i_cmc, t2i_mAP, t2i_mINP = t2i_cmc.numpy(), t2i_mAP.numpy(), t2i_mINP.numpy()
-    if retur_indices:
-        return [n_, t2i_cmc[0], t2i_cmc[4], t2i_cmc[9], t2i_mAP, t2i_mINP, t2i_cmc[0] + t2i_cmc[4] + t2i_cmc[9]], indices
-    else:
-        return [n_, t2i_cmc[0], t2i_cmc[4], t2i_cmc[9], t2i_mAP, t2i_mINP, t2i_cmc[0] + t2i_cmc[4] + t2i_cmc[9]]
+    row = [n_, t2i_cmc[0], t2i_cmc[4], t2i_cmc[9], t2i_mAP, t2i_mINP, t2i_cmc[0] + t2i_cmc[4] + t2i_cmc[9]]
+    return (row, indices) if retur_indices else row
 
 
-class Evaluator():
-    def __init__(self, img_loader, txt_loader, args):
+class Evaluator:
+    """
+    kNC REMOVED.
+    Inference prompt (PromptSG-style):
+      - simplified: fixed text query for cross-attn (fast)
+      - composed: per-image pseudo-token -> prompt learner -> text encoder (slow)
+    Similarity is computed between:
+      query_text_embedding (from caption)  vs  gallery_embedding (after cross-attn bottleneck)
+    """
+    def __init__(self, img_loader, txt_loader, refer_loader, args):
         self.img_loader = img_loader  # gallery
         self.txt_loader = txt_loader  # query
+        self.refer_loader = refer_loader  # unused (kept for backward-compat)
         self.logger = logging.getLogger("LPNC.eval")
         self.args = args
+
+    def _build_fixed_text_feature(self, model, device):
+        """
+        Build a fixed prompt embedding used as Query in cross-attention
+        when infer_prompt == 'simplified'.
+        We avoid depending on external tokenizers here by using model.encode_text
+        on a tokenized fixed string if available; otherwise fallback to composed.
+        """
+        # If your repo later adds args.fixed_prompt, it will be used
+        fixed_prompt = getattr(self.args, "fixed_prompt", "A photo of a person")
+
+        # Try to reuse the same tokenizer pipeline as TextDataset (SimpleTokenizer).
+        # We implement a tiny tokenizer wrapper here to avoid importing datasets.*.
+        try:
+            from utils.simple_tokenizer import SimpleTokenizer
+            tokenizer = SimpleTokenizer()
+            sot = tokenizer.encoder["<|startoftext|>"]
+            eot = tokenizer.encoder["<|endoftext|>"]
+            tokens = [sot] + tokenizer.encode(fixed_prompt) + [eot]
+            text_length = getattr(self.args, "text_length", 77)
+            ids = torch.zeros(text_length, dtype=torch.long)
+            if len(tokens) > text_length:
+                tokens = tokens[:text_length]
+                tokens[-1] = eot
+            ids[:len(tokens)] = torch.tensor(tokens, dtype=torch.long)
+            ids = ids.unsqueeze(0).to(device)
+
+            with torch.no_grad():
+                feat = model.encode_text(ids)  # (1, 512)
+            return feat.float()
+        except Exception:
+            return None  # fallback
+
+    def _process_images(self, model, img_loader, infer_prompt, fixed_text_feature, device):
+        """
+        Process images through the cross-attention pipeline.
+
+        Composed:
+          img -> encode_image1 -> image_tokens
+          S*_global = img2text(CLS)
+          S*_local  = local_pseudo(patch_tokens)   (no t_feats / W)
+          S* = S*_global + S*_local
+          "A photo of a S* person" -> text_encoder -> cross_attn(text, image) -> BN
+
+        Simplified:
+          fixed prompt "A photo of a person" -> cross_attn(text, image) -> BN
+        """
+        pids_list, feats_list = [], []
+        for pid, img in img_loader:
+            img = img.to(device)
+            with torch.no_grad():
+                image_tokens = model.encode_image1(img)       # (B, 1+M, D)
+                bsz = image_tokens.shape[0]
+
+                if infer_prompt == "composed":
+                    # S*_global from CLS token
+                    i_feats = image_tokens[:, 0, :].float()   # (B, D)
+                    s_global = model.img2text(i_feats.half())  # (B, D)
+
+                    # S*_local from patch tokens (no t_feats refinement, no W)
+                    patch_feats = image_tokens[:, 1:, :].float()  # (B, M, D)
+                    s_local = model.local_pseudo(patch_feats)      # (B, D)
+
+                    # S* = S*_global + S*_local
+                    pseudo_token = s_global + s_local.half()       # (B, D)
+
+                    with autocast():
+                        prompts = model.prompt_learner(pseudo_token)
+                        text_feature = model.text_encoder(
+                            prompts, model.prompt_learner.tokenized_prompts
+                        )
+                else:
+                    # simplified: "A photo of a person" (no mapping network)
+                    text_feature = fixed_text_feature.expand(bsz, -1)
+
+                # cross-attn  (Q=text_feature, K/V=image_tokens)
+                with autocast():
+                    cross_x = model.cross_former(
+                        text_feature.unsqueeze(1), image_tokens, image_tokens
+                    )
+                    cross_x_bn = model.bottleneck_proj(cross_x.squeeze(1))  # (B, D)
+
+            pids_list.append(pid.view(-1).cpu())
+            feats_list.append(cross_x_bn.detach().cpu().float())
+
+        return torch.cat(pids_list, 0), torch.cat(feats_list, 0)
 
     def _compute_embedding(self, model):
         model = model.eval()
         device = next(model.parameters()).device
 
-        qids, gids, qfeats, gfeats = [], [], [], []
+        infer_prompt = getattr(self.args, "infer_prompt", "simplified").lower()
+        fixed_text_feature = None
+        if infer_prompt == "simplified":
+            fixed_text_feature = self._build_fixed_text_feature(model, device)
+            if fixed_text_feature is None:
+                # fallback to composed if tokenizer unavailable
+                infer_prompt = "composed"
 
-        # text queries
-        for pid, caption in self.txt_loader:
-            caption = caption.to(device)
-            with torch.no_grad():
-                text_feat = model.encode_text(caption).cpu()
-            qids.append(pid.view(-1))
-            qfeats.append(text_feat)
-        qids = torch.cat(qids, 0)
-        qfeats = torch.cat(qfeats, 0)
-
-        # gallery images — PromptSG-style (no caption needed)
-        for pid, img in self.img_loader:
-            img = img.to(device)
-            with torch.no_grad():
-                with autocast():
-                    gallery_feat = model.encode_image_promptsg(img).cpu()
-            gids.append(pid.view(-1))
-            gfeats.append(gallery_feat)
-        gids = torch.cat(gids, 0)
-        gfeats = torch.cat(gfeats, 0)
+        # ---- image-only evaluation: both query & gallery use the same pipeline ----
+        gids, gfeats = self._process_images(model, self.img_loader, infer_prompt, fixed_text_feature, device)
+        # query = gallery (no captions used)
+        qids, qfeats = gids, gfeats
 
         return qfeats, gfeats, qids, gids
 
     def eval(self, model, i2t_metric=False):
         qfeats, gfeats, qids, gids = self._compute_embedding(model)
-        qfeats = F.normalize(qfeats, p=2, dim=1)  # text query features
-        gfeats = F.normalize(gfeats, p=2, dim=1)  # gallery cross_x_bn features
+
+        qfeats = F.normalize(qfeats, p=2, dim=1)
+        gfeats = F.normalize(gfeats, p=2, dim=1)
 
         sims = qfeats @ gfeats.t()
 
-        table = PrettyTable(["task", "R1", "R5", "R10", "mAP", "mINP", "rSum"])
+        # query == gallery -> exclude self-matches (diagonal)
+        sims.fill_diagonal_(-float('inf'))
 
-        rs = get_metrics(sims, qids, gids, 't2i', False)
+        table = PrettyTable(["task", "R1", "R5", "R10", "mAP", "mINP", "rSum"])
+        rs = get_metrics(sims, qids, gids, "i2i", False)
         table.add_row(rs)
-        top1 = rs[1]
 
         if i2t_metric:
-            i2t_cmc, i2t_mAP, i2t_mINP, _ = rank(similarity=sims.t(), q_pids=gids, g_pids=qids, max_rank=10, get_mAP=True)
+            i2t_cmc, i2t_mAP, i2t_mINP, _ = rank(
+                similarity=sims.t(), q_pids=gids, g_pids=qids, max_rank=10, get_mAP=True
+            )
             i2t_cmc, i2t_mAP, i2t_mINP = i2t_cmc.numpy(), i2t_mAP.numpy(), i2t_mINP.numpy()
-            table.add_row(['i2t', i2t_cmc[0], i2t_cmc[4], i2t_cmc[9], i2t_mAP, i2t_mINP,
-                           i2t_cmc[0] + i2t_cmc[4] + i2t_cmc[9]])
+            table.add_row(["i2t", i2t_cmc[0], i2t_cmc[4], i2t_cmc[9], i2t_mAP, i2t_mINP, i2t_cmc[0] + i2t_cmc[4] + i2t_cmc[9]])
 
         table.custom_format["R1"] = lambda f, v: f"{v:.2f}"
         table.custom_format["R5"] = lambda f, v: f"{v:.2f}"
         table.custom_format["R10"] = lambda f, v: f"{v:.2f}"
         table.custom_format["mAP"] = lambda f, v: f"{v:.2f}"
         table.custom_format["mINP"] = lambda f, v: f"{v:.2f}"
-        table.custom_format["RSum"] = lambda f, v: f"{v:.2f}"
+        table.custom_format["rSum"] = lambda f, v: f"{v:.2f}"
 
-        self.logger.info('\n' + str(table))
-        self.logger.info('\n' + "best R1 = " + str(top1))
-
+        self.logger.info("\n" + str(table))
+        top1 = float(rs[1])
+        self.logger.info("\n" + "best R1 = " + str(top1))
         return top1

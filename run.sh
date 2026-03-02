@@ -6,8 +6,4 @@ python train.py \
 --output_dir 'LPNC_log' \
 --dataset_name $DATASET_NAME \
 --loss_names 'supid+cotrl+cid' \
---num_epoch 60 \
---fp16 \
---gradient_checkpointing \
---batch_size 128 \
---gradient_accumulation_steps 4
+--num_epoch 60
