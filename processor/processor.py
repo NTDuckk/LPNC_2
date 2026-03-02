@@ -46,8 +46,8 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
 
             ret = model(batch)
 
-            # sum only loss tensors
-            total_loss = sum([v for k, v in ret.items() if "loss" in k])
+            # sum only component losses (exclude 'supid_loss')
+            total_loss = sum([ret[k] for k in ("supcon_loss", "id_loss", "triplet_loss") if k in ret])
 
             batch_size = batch["images"].shape[0]
             meters["loss"].update(float(total_loss.item()), batch_size)

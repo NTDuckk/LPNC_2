@@ -11,7 +11,7 @@ def get_args():
 
     # SupID weights
     parser.add_argument("--lambda1_weight", default=0.5, type=float)   # SupCon weight
-    parser.add_argument("--lambda2_weight", default=3.5, type=float)   # ID(CE) weight
+    parser.add_argument("--lambda2_weight", default=1.0, type=float)   # ID(CE) weight
     parser.add_argument("--lambda3_weight", default=1.0, type=float)   # Triplet weight (new)
     parser.add_argument("--triplet_margin", default=0.3, type=float)   # Triplet margin (new)
 
