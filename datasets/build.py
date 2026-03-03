@@ -126,14 +126,15 @@ def _build_dataset(args):
     return dataset
 
 
-def build_dataloader(args) -> Tuple[DataLoader, DataLoader, DataLoader, Optional[DataLoader], int]:
+def build_dataloader(args):
     """
-    Returns:
-      train_loader,
-      val_img_loader (gallery images),
-      val_txt_loader (query texts),
-      refer_txt_loader -> None (kNC removed),
-      num_classes
+    Training mode (args.training=True):
+      Returns: train_loader, val_img_loader, val_txt_loader, refer_txt_loader, num_classes
+      - val loaders use split chosen by args.val_dataset ("val" or "test", default "test")
+
+    Inference/test mode (args.training=False):
+      Returns: test_img_loader, test_txt_loader, refer_txt_loader, num_classes
+      - always uses dataset.test split
     """
     dataset = _build_dataset(args)
 
@@ -141,85 +142,96 @@ def build_dataloader(args) -> Tuple[DataLoader, DataLoader, DataLoader, Optional
     if hasattr(dataset, "train_id_container"):
         num_classes = len(dataset.train_id_container)
     else:
-        # fallback: infer from train pids
         pids = [x[0] for x in dataset.train]
         num_classes = int(max(pids)) + 1 if len(pids) else 0
-
-    train_tf = _make_transforms(args, is_train=True)
-    test_tf = _make_transforms(args, is_train=False)
-
-    train_set = ImageTextDataset(dataset.train, args, transform=train_tf, text_length=args.text_length, truncate=True)
-
-    # sampler
-    if args.sampler == "identity":
-        if getattr(args, "distributed", False):
-            sampler = RandomIdentitySampler_DDP(train_set.dataset, batch_size=args.batch_size, num_instances=args.num_instance)
-        else:
-            sampler = RandomIdentitySampler(train_set.dataset, batch_size=args.batch_size, num_instances=args.num_instance)
-
-        train_loader = DataLoader(
-            train_set,
-            batch_size=args.batch_size if not getattr(args, "distributed", False) else args.batch_size // torch.distributed.get_world_size(),
-            sampler=sampler,
-            num_workers=args.num_workers,
-            pin_memory=True,
-            drop_last=True,
-            collate_fn=_collate_dict,
-        )
-    else:
-        # random
-        train_loader = DataLoader(
-            train_set,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=args.num_workers,
-            pin_memory=True,
-            drop_last=True,
-            collate_fn=_collate_dict,
-        )
-
-    # build val/test loaders
-    split_name = getattr(args, "val_dataset", "test")  # "val" or "test"
-    if split_name == "val":
-        annos = getattr(dataset, "val_annos", None)
-        split = getattr(dataset, "val", None)
-    else:
-        annos = getattr(dataset, "test_annos", None)
-        split = getattr(dataset, "test", None)
-
-    if annos is None or split is None:
-        raise ValueError(f"Dataset object must provide '{split_name}_annos' and '{split_name}'")
-
-    # Prefer processed split (dict) that may already contain full img_paths
-    if isinstance(split, dict) and "img_paths" in split:
-        img_paths = split.get("img_paths", [])
-        img_pids = split.get("image_pids", split.get("img_pids", []))
-    else:
-        img_pids, img_paths = _parse_annos(annos)
-
-    caption_pids, captions = _parse_captions(split)
-
-    val_img_set = ImageDataset(img_pids, img_paths, transform=test_tf)
-    val_txt_set = TextDataset(caption_pids, captions, text_length=args.text_length, truncate=True)
-
-    val_img_loader = DataLoader(
-        val_img_set,
-        batch_size=args.test_batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
-    val_txt_loader = DataLoader(
-        val_txt_set,
-        batch_size=args.test_batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=False,
-    )
 
     # kNC removed => no refer loader
     refer_txt_loader = None
 
-    return train_loader, val_img_loader, val_txt_loader, refer_txt_loader, num_classes
+    if args.training:
+        # ---- TRAINING MODE ----
+        train_tf = _make_transforms(args, is_train=True)
+        val_tf = _make_transforms(args, is_train=False)
+
+        train_set = ImageTextDataset(dataset.train, args, transform=train_tf, text_length=args.text_length, truncate=True)
+
+        # sampler
+        if args.sampler == "identity":
+            if getattr(args, "distributed", False):
+                sampler = RandomIdentitySampler_DDP(train_set.dataset, batch_size=args.batch_size, num_instances=args.num_instance)
+            else:
+                sampler = RandomIdentitySampler(train_set.dataset, batch_size=args.batch_size, num_instances=args.num_instance)
+
+            train_loader = DataLoader(
+                train_set,
+                batch_size=args.batch_size if not getattr(args, "distributed", False) else args.batch_size // torch.distributed.get_world_size(),
+                sampler=sampler,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                drop_last=True,
+                collate_fn=_collate_dict,
+            )
+        else:
+            train_loader = DataLoader(
+                train_set,
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                drop_last=True,
+                collate_fn=_collate_dict,
+            )
+
+        # validation loaders: use val or test split based on args.val_dataset
+        ds = dataset.val if getattr(args, "val_dataset", "test") == "val" else dataset.test
+
+        val_img_set = ImageDataset(ds['image_pids'], ds['img_paths'], transform=val_tf)
+        val_txt_set = TextDataset(ds['caption_pids'], ds['captions'], text_length=args.text_length, truncate=True)
+
+        val_img_loader = DataLoader(
+            val_img_set,
+            batch_size=args.test_batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+        val_txt_loader = DataLoader(
+            val_txt_set,
+            batch_size=args.test_batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+
+        return train_loader, val_img_loader, val_txt_loader, refer_txt_loader, num_classes
+
+    else:
+        # ---- INFERENCE / TEST MODE ----
+        test_tf = _make_transforms(args, is_train=False)
+
+        # always use dataset.test for final evaluation
+        ds = dataset.test
+
+        test_img_set = ImageDataset(ds['image_pids'], ds['img_paths'], transform=test_tf)
+        test_txt_set = TextDataset(ds['caption_pids'], ds['captions'], text_length=args.text_length, truncate=True)
+
+        test_img_loader = DataLoader(
+            test_img_set,
+            batch_size=args.test_batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+        test_txt_loader = DataLoader(
+            test_txt_set,
+            batch_size=args.test_batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+
+        return test_img_loader, test_txt_loader, refer_txt_loader, num_classes

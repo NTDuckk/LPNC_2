@@ -77,37 +77,36 @@ if __name__ == '__main__':
 
     device = "cuda"
 
-    # dataloaders (refer_txt_loader is None because kNC removed)
-    train_loader, val_img_loader, val_txt_loader, refer_txt_loader, num_classes = build_dataloader(args)
-
-    # model
-    model = build_model(args, num_classes)
-    logger.info('Total params: %2.fM' % (sum(p.numel() for p in model.parameters() if p.requires_grad) / 1000000.0))
-    model.to(device)
-
-    # optional load checkpoint weights (finetune path)
-    if args.finetune:
-        logger.info("loading {} model".format(args.finetune))
-        ckpt = torch.load(args.finetune, map_location='cpu')
-        param_dict = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
-        # strip possible "module." prefix
-        new_sd = {}
-        for k, v in param_dict.items():
-            nk = k.replace('module.', '')
-            new_sd[nk] = v
-        model.load_state_dict(new_sd, strict=False)
-
-    # DDP wrap
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[args.local_rank],
-            output_device=args.local_rank,
-            broadcast_buffers=False,
-        )
-
     # TRAIN
     if args.training:
+        # dataloaders: train + val (split chosen by args.val_dataset)
+        train_loader, val_img_loader, val_txt_loader, refer_txt_loader, num_classes = build_dataloader(args)
+
+        # model
+        model = build_model(args, num_classes)
+        logger.info('Total params: %2.fM' % (sum(p.numel() for p in model.parameters() if p.requires_grad) / 1000000.0))
+        model.to(device)
+
+        # optional load checkpoint weights (finetune path)
+        if args.finetune:
+            logger.info("loading {} model".format(args.finetune))
+            ckpt = torch.load(args.finetune, map_location='cpu')
+            param_dict = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
+            new_sd = {}
+            for k, v in param_dict.items():
+                nk = k.replace('module.', '')
+                new_sd[nk] = v
+            model.load_state_dict(new_sd, strict=False)
+
+        # DDP wrap
+        if args.distributed:
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                device_ids=[args.local_rank],
+                output_device=args.local_rank,
+                broadcast_buffers=False,
+            )
+
         optimizer = build_optimizer(args, model)
         scheduler = build_lr_scheduler(args, optimizer)
 
@@ -120,8 +119,6 @@ if __name__ == '__main__':
             start_epoch = checkpoint.get('epoch', 1)
             logger.info(f"===================> start {start_epoch}")
 
-        # evaluator is created inside processor.do_train via passed object in your codebase
-        # but your current processor expects an Evaluator instance passed in.
         from utils.metrics import Evaluator
         evaluator = Evaluator(val_img_loader, val_txt_loader, refer_txt_loader, args)
 
@@ -129,10 +126,38 @@ if __name__ == '__main__':
 
     # TEST / INFERENCE
     else:
+        # dataloaders: test only (always uses dataset.test)
+        test_img_loader, test_txt_loader, refer_txt_loader, num_classes = build_dataloader(args)
+
+        # model
+        model = build_model(args, num_classes)
+        logger.info('Total params: %2.fM' % (sum(p.numel() for p in model.parameters() if p.requires_grad) / 1000000.0))
+        model.to(device)
+
+        # optional load checkpoint weights (finetune path)
+        if args.finetune:
+            logger.info("loading {} model".format(args.finetune))
+            ckpt = torch.load(args.finetune, map_location='cpu')
+            param_dict = ckpt['model'] if isinstance(ckpt, dict) and 'model' in ckpt else ckpt
+            new_sd = {}
+            for k, v in param_dict.items():
+                nk = k.replace('module.', '')
+                new_sd[nk] = v
+            model.load_state_dict(new_sd, strict=False)
+
+        # DDP wrap
+        if args.distributed:
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                device_ids=[args.local_rank],
+                output_device=args.local_rank,
+                broadcast_buffers=False,
+            )
+
         # only rank0 runs eval to avoid duplicated logs/output
         if args.distributed and get_rank() != 0:
             synchronize()
             raise SystemExit(0)
 
         effective_model = model.module if hasattr(model, "module") else model
-        do_inference(effective_model, val_img_loader, val_txt_loader, refer_txt_loader, args)
+        do_inference(effective_model, test_img_loader, test_txt_loader, refer_txt_loader, args)
