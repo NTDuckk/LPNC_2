@@ -158,14 +158,15 @@ class Evaluator:
                 if infer_prompt == "composed":
                     # S*_global from CLS token
                     i_feats = image_tokens[:, 0, :].float()   # (B, D)
-                    s_global = model.img2text(i_feats.half())  # (B, D)
+                    # keep IM2TEXT input in float to match module parameter dtypes
+                    s_global = model.img2text(i_feats)  # (B, D)
 
                     # S*_local from patch tokens (no t_feats refinement, no W)
                     patch_feats = image_tokens[:, 1:, :].float()  # (B, M, D)
                     s_local = model.local_pseudo(patch_feats)      # (B, D)
 
-                    # S* = S*_global + S*_local
-                    pseudo_token = s_global + s_local.half()       # (B, D)
+                    # S* = S*_global + S*_local (keep both in float dtype)
+                    pseudo_token = s_global + s_local       # (B, D)
 
                     with autocast():
                         prompts = model.prompt_learner(pseudo_token)
