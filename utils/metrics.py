@@ -166,7 +166,9 @@ class Evaluator:
                     s_global = model.img2text(i_feats.half())  # (B, D)
 
                     # S*_local from patch tokens (no t_feats refinement, no W)
-                    patch_feats = image_tokens[:, 1:, :].float()  # (B, M, D)
+                    # Ensure patch_feats dtype matches local_pseudo queries to avoid
+                    # mixed-precision matmul errors (float vs half).
+                    patch_feats = image_tokens[:, 1:, :].to(model.local_pseudo.queries.dtype)  # (B, M, D)
                     s_local = model.local_pseudo(patch_feats)      # (B, D)
 
                     # S* = S*_global + S*_local
@@ -184,7 +186,7 @@ class Evaluator:
                         # use_composed guards above) -- compute composed instead
                         i_feats = image_tokens[:, 0, :].float()
                         s_global = model.img2text(i_feats.half())
-                        patch_feats = image_tokens[:, 1:, :].float()
+                        patch_feats = image_tokens[:, 1:, :].to(model.local_pseudo.queries.dtype)
                         s_local = model.local_pseudo(patch_feats)
                         pseudo_token = s_global + s_local.half()
                         with autocast():
