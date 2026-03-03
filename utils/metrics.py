@@ -110,7 +110,8 @@ class Evaluator:
         on a tokenized fixed string if available; otherwise fallback to composed.
         """
         # If your repo later adds args.fixed_prompt, it will be used
-        fixed_prompt = getattr(self.args, "fixed_prompt", "A photo of a person")
+        
+        pt = getattr(self.args, "fixed_prompt", "A photo of a person")
 
         # Try to reuse the same tokenizer pipeline as TextDataset (SimpleTokenizer).
         # We implement a tiny tokenizer wrapper here to avoid importing datasets.*.
@@ -119,7 +120,8 @@ class Evaluator:
             tokenizer = SimpleTokenizer()
             sot = tokenizer.encoder["<|startoftext|>"]
             eot = tokenizer.encoder["<|endoftext|>"]
-            tokens = [sot] + tokenizer.encode(fixed_prompt) + [eot]
+            # use local variable 'pt' (fixed prompt) instead of undefined name
+            tokens = [sot] + tokenizer.encode(pt) + [eot]
             text_length = getattr(self.args, "text_length", 77)
             ids = torch.zeros(text_length, dtype=torch.long)
             if len(tokens) > text_length:
@@ -155,7 +157,10 @@ class Evaluator:
                 image_tokens = model.encode_image1(img)       # (B, 1+M, D)
                 bsz = image_tokens.shape[0]
 
-                if infer_prompt == "composed":
+                # If fixed_text_feature is not available, force composed pipeline
+                use_composed = (infer_prompt == "composed") or (fixed_text_feature is None)
+
+                if use_composed:
                     # S*_global from CLS token
                     i_feats = image_tokens[:, 0, :].float()   # (B, D)
                     s_global = model.img2text(i_feats.half())  # (B, D)
@@ -174,7 +179,21 @@ class Evaluator:
                         )
                 else:
                     # simplified: "A photo of a person" (no mapping network)
-                    text_feature = fixed_text_feature.expand(bsz, -1)
+                    if fixed_text_feature is None:
+                        # defensive fallback (should not normally happen because
+                        # use_composed guards above) -- compute composed instead
+                        i_feats = image_tokens[:, 0, :].float()
+                        s_global = model.img2text(i_feats.half())
+                        patch_feats = image_tokens[:, 1:, :].float()
+                        s_local = model.local_pseudo(patch_feats)
+                        pseudo_token = s_global + s_local.half()
+                        with autocast():
+                            prompts = model.prompt_learner(pseudo_token)
+                            text_feature = model.text_encoder(
+                                prompts, model.prompt_learner.tokenized_prompts
+                            )
+                    else:
+                        text_feature = fixed_text_feature.expand(bsz, -1)
 
                 # cross-attn  (Q=text_feature, K/V=image_tokens)
                 with autocast():
