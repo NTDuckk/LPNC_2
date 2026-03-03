@@ -1,6 +1,7 @@
 import logging
 import time
 import torch
+from torch.cuda import amp
 
 from utils.meter import AverageMeter
 from utils.metrics import Evaluator
@@ -19,6 +20,8 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
     logger = logging.getLogger("LPNC.train")
     logger.info("start training")
 
+    scaler = amp.GradScaler()
+
     # keep only supervised ID/contrastive/triplet components
     meters = {
         "loss": AverageMeter(),
@@ -34,6 +37,8 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
 
     for epoch in range(start_epoch, num_epoch + 1):
         start_time = time.time()
+        # step scheduler at start of epoch (consistent with stage2)
+        scheduler.step()
         for meter in meters.values():
             meter.reset()
 
@@ -43,10 +48,11 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
         for n_iter, batch in enumerate(train_loader):
             batch = {k: v.to(device) for k, v in batch.items()}
 
-            ret = model(batch)
-
-            # sum component losses
-            total_loss = sum([ret[k] for k in ("supcon_loss", "id_loss", "triplet_loss") if k in ret])
+            # mixed precision forward
+            with amp.autocast(enabled=True):
+                ret = model(batch)
+                # sum component losses
+                total_loss = sum([ret[k] for k in ("supcon_loss", "id_loss", "triplet_loss") if k in ret])
 
             batch_size = batch["images"].shape[0]
             meters["loss"].update(float(total_loss.item()), batch_size)
@@ -56,8 +62,9 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
             meters["triplet_loss"].update(float(ret.get("triplet_loss", 0.0)), batch_size)
 
             optimizer.zero_grad()
-            total_loss.backward()
-            optimizer.step()
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             synchronize()
 
             if (n_iter + 1) % log_period == 0:
@@ -92,7 +99,7 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
             if v.avg > 0:
                 tb_writer.add_scalar(k, v.avg, epoch)
 
-        scheduler.step()
+        # scheduler already stepped at start of epoch
 
         if get_rank() == 0:
             end_time = time.time()
