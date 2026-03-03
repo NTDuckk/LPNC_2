@@ -2,6 +2,7 @@ import logging
 from prettytable import PrettyTable
 
 import torch
+import numpy as np
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
 
@@ -11,35 +12,69 @@ def rank(similarity, q_pids, g_pids, max_rank=10, get_mAP=True):
     similarity: torch.Tensor [num_query, num_gallery]
     q_pids/g_pids: torch.Tensor [num_query] / [num_gallery]
     """
-    if get_mAP:
-        similarity = torch.tensor(similarity) if not torch.is_tensor(similarity) else similarity
-        indices = torch.argsort(similarity, dim=1, descending=True)
+    # Convert similarity to numpy for global argsort (descending)
+    if torch.is_tensor(similarity):
+        sim_np = similarity.detach().cpu().numpy()
     else:
-        _, indices = torch.topk(similarity, k=max_rank, dim=1, largest=True, sorted=True)
+        sim_np = np.array(similarity)
 
-    pred_labels = g_pids[indices.cpu()]
-    matches = pred_labels.eq(q_pids.view(-1, 1))
+    # argsort descending across each row
+    indices_np = np.argsort(-sim_np, axis=1)
 
-    all_cmc = matches[:, :max_rank].cumsum(1)
-    all_cmc[all_cmc > 1] = 1
-    all_cmc = all_cmc.float().mean(0) * 100
+    # ensure pids are numpy arrays
+    q_pids_np = q_pids.detach().cpu().numpy() if torch.is_tensor(q_pids) else np.array(q_pids)
+    g_pids_np = g_pids.detach().cpu().numpy() if torch.is_tensor(g_pids) else np.array(g_pids)
 
-    if not get_mAP:
-        return all_cmc, indices
+    pred_labels = g_pids_np[indices_np]
+    matches = (pred_labels == q_pids_np[:, None])  # boolean numpy array
 
-    num_rel = matches.sum(1)
-    tmp_cmc = matches.cumsum(1)
+    num_q, num_g = matches.shape
 
-    inp = [tmp_cmc[i][match_row.nonzero()[-1]] / (match_row.nonzero()[-1] + 1.0)
-           for i, match_row in enumerate(matches)]
-    mINP = torch.cat(inp).mean() * 100
+    all_cmc_list = []
+    all_AP = []
+    all_INP = []
+    num_valid_q = 0
 
-    tmp_cmc = [tmp_cmc[:, i] / (i + 1.0) for i in range(tmp_cmc.shape[1])]
-    tmp_cmc = torch.stack(tmp_cmc, 1) * matches
-    AP = tmp_cmc.sum(1) / num_rel
-    mAP = AP.mean() * 100
+    for i in range(num_q):
+        match_row = matches[i]
+        if not match_row.any():
+            # skip queries that have no matching gallery
+            continue
 
-    return all_cmc, mAP, mINP, indices
+        # cumulative matches (binary)
+        cmc = np.cumsum(match_row.astype(np.int32))
+        cmc[cmc > 1] = 1
+        all_cmc_list.append(cmc[:max_rank])
+        num_valid_q += 1
+
+        # AP computation (numpy) following eval_func
+        num_rel = match_row.sum()
+        tmp_cmc = np.cumsum(match_row.astype(np.float32))
+        y = np.arange(1, tmp_cmc.shape[0] + 1).astype(np.float32)
+        tmp = tmp_cmc / y
+        tmp = tmp * match_row.astype(np.float32)
+        AP = tmp.sum() / float(num_rel)
+        all_AP.append(AP)
+
+        # INP: precision at the last correct match
+        last_pos = np.where(match_row)[0][-1]
+        inp_val = tmp_cmc[last_pos] / float(last_pos + 1)
+        all_INP.append(inp_val)
+
+    assert num_valid_q > 0, "Error: all query identities do not appear in gallery"
+
+    all_cmc_np = np.asarray(all_cmc_list).astype(np.float32)
+    all_cmc = all_cmc_np.sum(0) / float(num_valid_q)
+    mAP = float(np.mean(all_AP))
+    mINP = float(np.mean(all_INP))
+
+    # convert back to torch tensors to preserve previous interface
+    all_cmc_t = torch.from_numpy(all_cmc)
+    mAP_t = torch.tensor(mAP, dtype=torch.float32)
+    mINP_t = torch.tensor(mINP, dtype=torch.float32)
+    indices_t = torch.from_numpy(indices_np).long()
+
+    return all_cmc_t, mAP_t, mINP_t, indices_t
 
 
 def get_metrics(similarity, qids, gids, n_, retur_indices=False):

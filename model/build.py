@@ -198,8 +198,7 @@ class LPNC(nn.Module):
 
         self.img2text = IM2TEXT(embed_dim=512, middle_dim=512, output_dim=512, n_layer=2)       # fMg (S*_global)
         self.local_pseudo = LocalPseudoWord(embed_dim=self.embed_dim, num_queries=2,              # S*_local (SCGI)
-                                            num_heads=self.embed_dim // 64, ffn_dim=self.embed_dim * 4)
-        self.W = nn.Parameter(torch.eye(512))
+                            num_heads=self.embed_dim // 64, ffn_dim=self.embed_dim * 4)
         self.prompt_learner = PromptLearner(self.base_model.dtype, self.base_model.token_embedding)
 
     def cross_former(self, q, k, v):
@@ -244,10 +243,10 @@ class LPNC(nn.Module):
         # S*_global  (from refined CLS token)
         token_features = self.img2text(i_feats.half())                         # [B, D]
 
-        # S*_local   (use refined patch tokens from refined_image_feats, then project with W)
-        # ensure patch_feats has same dtype as parameter `W` to avoid dtype mismatch
-        patch_feats = refined_image_feats[:, 1:, :].to(self.W.dtype)           # [B, M, D]
-        local_features = self.local_pseudo(patch_feats @ self.W)               # [B, D]
+        # S*_local   (use refined patch tokens from refined_image_feats)
+        # ensure patch_feats has same dtype as LocalPseudoWord queries to avoid dtype mismatch
+        patch_feats = refined_image_feats[:, 1:, :].to(self.local_pseudo.queries.dtype)  # [B, M, D]
+        local_features = self.local_pseudo(patch_feats)                              # [B, D]
 
         # S* = S*_global + S*_local
         pseudo_token = token_features + local_features.half()                   # [B, D]
