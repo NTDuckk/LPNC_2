@@ -204,6 +204,7 @@ class LPNC(nn.Module):
         self.img2text = IM2TEXT(embed_dim=512, middle_dim=512, output_dim=512, n_layer=2)       # fMg (S*_global)
         self.local_pseudo = LocalPseudoWord(embed_dim=self.embed_dim, num_queries=2,              # S*_local (SCGI)
                             num_heads=self.embed_dim // 64, ffn_dim=self.embed_dim * 4)
+        self.W = nn.Parameter(torch.eye(self.embed_dim))  # learnable projection before local_pseudo
         self.prompt_learner = PromptLearner(self.base_model.dtype, self.base_model.token_embedding)
 
     def cross_former(self, q, k, v):
@@ -248,10 +249,9 @@ class LPNC(nn.Module):
         # S*_global  (from refined CLS token)
         token_features = self.img2text(i_feats)                                # [B, D]
 
-        # S*_local   (use refined patch tokens from refined_image_feats)
-        # FP32: no manual dtype cast needed
+        # S*_local   (use refined patch tokens from refined_image_feats, project with W)
         patch_feats = refined_image_feats[:, 1:, :].float()                    # [B, M, D]
-        local_features = self.local_pseudo(patch_feats)                        # [B, D]
+        local_features = self.local_pseudo(patch_feats @ self.W.float())       # [B, D]
 
         # S* = S*_global + S*_local
         pseudo_token = token_features + local_features                         # [B, D]
@@ -283,7 +283,11 @@ class LPNC(nn.Module):
 
 def build_model(args, num_classes=11003):
     model = LPNC(args, num_classes)
-    # FP32 mode: keep all parameters in float32 for training stability.
+    # FP32 mode: keep all parameters and buffers in float32 for training stability.
     # GradScaler in the processor handles mixed-precision efficiency.
     model.float()
+    # dtype is a plain Python attribute (not a buffer/parameter), so model.float() does
+    # not update it. Override manually so internal .type(self.dtype) calls stay FP32.
+    model.text_encoder.dtype = torch.float32
+    model.prompt_learner.dtype = torch.float32
     return model

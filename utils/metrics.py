@@ -165,11 +165,9 @@ class Evaluator:
                     i_feats = image_tokens[:, 0, :].float()   # (B, D)
                     s_global = model.img2text(i_feats.half())  # (B, D)
 
-                    # S*_local from patch tokens (no t_feats refinement, no W)
-                    # Ensure patch_feats dtype matches local_pseudo queries to avoid
-                    # mixed-precision matmul errors (float vs half).
-                    patch_feats = image_tokens[:, 1:, :].to(model.local_pseudo.queries.dtype)  # (B, M, D)
-                    s_local = model.local_pseudo(patch_feats)      # (B, D)
+                    # S*_local: project with W then cross-attn+FFN (same as training)
+                    patch_feats = image_tokens[:, 1:, :].to(model.W.dtype)  # (B, M, D)
+                    s_local = model.local_pseudo(patch_feats @ model.W)     # (B, D)
 
                     # S* = S*_global + S*_local
                     pseudo_token = s_global + s_local.half()       # (B, D)
@@ -186,8 +184,8 @@ class Evaluator:
                         # use_composed guards above) -- compute composed instead
                         i_feats = image_tokens[:, 0, :].float()
                         s_global = model.img2text(i_feats.half())
-                        patch_feats = image_tokens[:, 1:, :].to(model.local_pseudo.queries.dtype)
-                        s_local = model.local_pseudo(patch_feats)
+                        patch_feats = image_tokens[:, 1:, :].to(model.W.dtype)
+                        s_local = model.local_pseudo(patch_feats @ model.W)
                         pseudo_token = s_global + s_local.half()
                         with autocast():
                             prompts = model.prompt_learner(pseudo_token)
