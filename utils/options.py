@@ -65,6 +65,10 @@ def get_args():
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight_decay", type=float, default=4e-5)
     parser.add_argument("--weight_decay_bias", type=float, default=0.)
+    parser.add_argument("--warmup_lr_init", type=float, default=1e-5, help="initial LR during warmup")
+    parser.add_argument("--lr_min", type=float, default=1e-6, help="minimum LR for scheduler")
+    parser.add_argument("--warmup_iters", type=int, default=0, help="warmup iterations (optional)")
+    parser.add_argument("--large_fc_lr", default=False, action='store_true', help="use larger LR for final FC")
     parser.add_argument("--alpha", type=float, default=0.9)
     parser.add_argument("--beta", type=float, default=0.999)
 

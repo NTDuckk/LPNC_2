@@ -1,5 +1,7 @@
 import logging
+import sys
 import time
+from pathlib import Path
 import torch
 from torch.cuda.amp import autocast, GradScaler
 
@@ -7,6 +9,77 @@ from utils.meter import AverageMeter
 from utils.metrics import Evaluator
 from utils.comm import get_rank, synchronize
 from torch.utils.tensorboard import SummaryWriter
+
+# Ensure project root is importable for standalone visualize_* scripts
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+
+def _run_post_training_viz(args, model, img_loader=None):
+    """
+    Tự động chạy visualize_learning_curves và visualize_xai sau khi train xong.
+    Chỉ gọi trên rank 0.
+    """
+    logger = logging.getLogger("LPNC.train")
+    output_dir = args.output_dir
+    viz_dir = Path(output_dir) / "visualizations"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 1. Learning curves ────────────────────────────────────────────────────
+    try:
+        from visualize_learning_curves import plot_run
+        curves_out = str(viz_dir / "learning_curves.png")
+        plot_run(log_dir=output_dir, save_path=curves_out)
+        logger.info(f"[viz] Learning curves saved -> {curves_out}")
+    except Exception as e:
+        logger.warning(f"[viz] Learning curves failed: {e}")
+
+    # ── 2. XAI heatmaps on a few sample images ────────────────────────────────
+    try:
+        from visualize_xai import visualize_image, load_model as _load_model_xai
+
+        # Try to get one batch of images from img_loader
+        sample_imgs = []
+        if img_loader is not None:
+            try:
+                _pid, _img = next(iter(img_loader))
+                # save the first image temporarily
+                import torchvision.transforms.functional as TVF
+                from PIL import Image as PILImage
+                tmp_img_path = str(viz_dir / "_sample_img.jpg")
+                # de-normalize: mean/std used in datasets
+                mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(3,1,1)
+                std  = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(3,1,1)
+                img0 = _img[0].cpu().float() * std + mean
+                img0 = img0.clamp(0, 1)
+                PILImage.fromarray((img0.permute(1,2,0).numpy() * 255).astype('uint8')).save(tmp_img_path)
+                sample_imgs.append(tmp_img_path)
+            except Exception as e:
+                logger.warning(f"[viz] Could not extract sample image: {e}")
+
+        if not sample_imgs:
+            logger.info("[viz] No sample images for XAI – skipping.")
+        else:
+            # Load best checkpoint if it exists
+            best_ckpt = Path(output_dir) / "best.pth"
+            ckpt_path = str(best_ckpt) if best_ckpt.exists() else None
+
+            device_str = "cuda" if torch.cuda.is_available() else "cpu"
+            xai_model = _load_model_xai(ckpt_path, device_str)
+
+            for img_path in sample_imgs:
+                out_path = str(viz_dir / f"xai_{Path(img_path).stem}.png")
+                visualize_image(
+                    xai_model, img_path,
+                    methods=["last_attn", "rollout", "gradcam"],
+                    device=device_str,
+                    img_size=getattr(args, "img_size", (384, 128)),
+                    save_path=out_path,
+                )
+                logger.info(f"[viz] XAI saved -> {out_path}")
+    except Exception as e:
+        logger.warning(f"[viz] XAI visualization failed: {e}")
 
 
 def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, scheduler, checkpointer):
@@ -123,6 +196,8 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
 
     if get_rank() == 0:
         logger.info(f"best R1: {best_top1} at epoch {arguments.get('epoch', -1)}")
+        # Auto-run visualizations after training completes
+        _run_post_training_viz(args, model, img_loader=evaluator.img_loader)
 
 
 def do_inference(model, test_img_loader, test_txt_loader, refer_loader, args):
