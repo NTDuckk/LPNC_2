@@ -1,7 +1,7 @@
 import logging
 import time
 import torch
-from torch.cuda import amp
+from torch.cuda.amp import autocast
 
 from utils.meter import AverageMeter
 from utils.metrics import Evaluator
@@ -19,8 +19,6 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
 
     logger = logging.getLogger("LPNC.train")
     logger.info("start training")
-
-    scaler = amp.GradScaler()
 
     # keep only supervised ID/contrastive/triplet components
     meters = {
@@ -48,8 +46,8 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
         for n_iter, batch in enumerate(train_loader):
             batch = {k: v.to(device) for k, v in batch.items()}
 
-            # mixed precision forward
-            with amp.autocast(enabled=True):
+            # mixed precision forward (autocast only; model weights stay FP16 from CLIP)
+            with autocast():
                 ret = model(batch)
                 # sum component losses
                 total_loss = sum([ret[k] for k in ("supcon_loss", "id_loss", "triplet_loss") if k in ret])
@@ -62,9 +60,8 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
             meters["triplet_loss"].update(float(ret.get("triplet_loss", 0.0)), batch_size)
 
             optimizer.zero_grad()
-            scaler.scale(total_loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            total_loss.backward()
+            optimizer.step()
             synchronize()
 
             if (n_iter + 1) % log_period == 0:
