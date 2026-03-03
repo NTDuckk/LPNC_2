@@ -3,6 +3,7 @@ import copy
 import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
+import torch.nn.functional as F
 
 from model import objectives
 from .clip_model import Transformer, LayerNorm, build_CLIP_from_openai_pretrained, convert_weights, tokenize
@@ -264,9 +265,13 @@ class LPNC(nn.Module):
 
             cls_score = self.classifier_proj(cross_x_bn)
 
+        # L2-normalize features before SupConLoss as requested
+        img_feats_norm = F.normalize(img_feats, p=2, dim=1)
+        text_feature_norm = F.normalize(text_feature.float(), p=2, dim=1)
+
         supcon_loss = (
-            supcon(img_feats, text_feature.float(), batch['pids'], batch['pids'])
-            + supcon(text_feature.float(), img_feats, batch['pids'], batch['pids'])
+            supcon(img_feats_norm, text_feature_norm, batch['pids'], batch['pids'])
+            + supcon(text_feature_norm, img_feats_norm, batch['pids'], batch['pids'])
         )
         id_loss = objectives.compute_id(cls_score, batch['pids'])
 

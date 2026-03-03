@@ -47,7 +47,7 @@ def get_args():
     ######################## inference settings (PromptSG-style) ########################
     # simplified: fixed prompt "A photo of a person" (fast)
     # composed: per-image pseudo-token -> prompt -> text encoder (slow)
-    parser.add_argument("--infer_prompt", type=str, default="composed ", choices=["simplified", "composed"])
+    parser.add_argument("--infer_prompt", type=str, default="composed", choices=["simplified", "composed"])
     parser.add_argument("--fixed_prompt", type=str, default="A photo of a person")
 
     ######################## vision transformer settings ########################
