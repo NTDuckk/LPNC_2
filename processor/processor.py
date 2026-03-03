@@ -1,7 +1,7 @@
 import logging
 import time
 import torch
-from torch.cuda.amp import autocast
+from torch.cuda.amp import autocast, GradScaler
 
 from utils.meter import AverageMeter
 from utils.metrics import Evaluator
@@ -29,6 +29,7 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
     }
 
     tb_writer = SummaryWriter(log_dir=args.output_dir)
+    scaler = GradScaler()
 
     best_top1 = 0.0
     now_top1 = 0.0
@@ -46,11 +47,11 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
         for n_iter, batch in enumerate(train_loader):
             batch = {k: v.to(device) for k, v in batch.items()}
 
-            # mixed precision forward (autocast only; model weights stay FP16 from CLIP)
+            # FP32 model + autocast for mixed-precision efficiency + GradScaler for backward
             with autocast():
                 ret = model(batch)
                 # Weighted sum of component losses using config lambdas
-                lam1 = getattr(args, "lambda1_weight", 1.0)
+                lam1 = getattr(args, "lambda1_weight", 0.5)
                 lam2 = getattr(args, "lambda2_weight", 1.0)
                 lam3 = getattr(args, "lambda3_weight", 1.0)
                 supcon_val = ret.get("supcon_loss", 0.0)
@@ -66,8 +67,9 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
             meters["triplet_loss"].update(float(ret.get("triplet_loss", 0.0)), batch_size)
 
             optimizer.zero_grad()
-            total_loss.backward()
-            optimizer.step()
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             synchronize()
 
             if (n_iter + 1) % log_period == 0:

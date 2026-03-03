@@ -246,15 +246,15 @@ class LPNC(nn.Module):
         i_feats = refined_image_feats[:, 0, :].float()                         # [B, D] CLS token
 
         # S*_global  (from refined CLS token)
-        token_features = self.img2text(i_feats.half())                         # [B, D]
+        token_features = self.img2text(i_feats)                                # [B, D]
 
         # S*_local   (use refined patch tokens from refined_image_feats)
-        # ensure patch_feats has same dtype as LocalPseudoWord queries to avoid dtype mismatch
-        patch_feats = refined_image_feats[:, 1:, :].to(self.local_pseudo.queries.dtype)  # [B, M, D]
-        local_features = self.local_pseudo(patch_feats)                              # [B, D]
+        # FP32: no manual dtype cast needed
+        patch_feats = refined_image_feats[:, 1:, :].float()                    # [B, M, D]
+        local_features = self.local_pseudo(patch_feats)                        # [B, D]
 
         # S* = S*_global + S*_local
-        pseudo_token = token_features + local_features.half()                   # [B, D]
+        pseudo_token = token_features + local_features                         # [B, D]
 
         with autocast():
             prompts = self.prompt_learner(pseudo_token)                         # no W here anymore
@@ -263,7 +263,7 @@ class LPNC(nn.Module):
             cross_x = self.cross_former(text_feature.unsqueeze(1), image_feats, image_feats)
             cross_x_bn = self.bottleneck_proj(cross_x.squeeze(1))
 
-            cls_score = self.classifier_proj(cross_x_bn.half()).float()
+            cls_score = self.classifier_proj(cross_x_bn)
 
         supcon_loss = (
             supcon(img_feats, text_feature.float(), batch['pids'], batch['pids'])
@@ -283,5 +283,7 @@ class LPNC(nn.Module):
 
 def build_model(args, num_classes=11003):
     model = LPNC(args, num_classes)
-    convert_weights(model)
+    # FP32 mode: keep all parameters in float32 for training stability.
+    # GradScaler in the processor handles mixed-precision efficiency.
+    model.float()
     return model

@@ -6,28 +6,28 @@ from .lr_scheduler import LRSchedulerWithWarmup
 def build_optimizer(args, model):
     params = []
 
-    print(f'Using {args.lr_factor} times learning rate for random init module ')
-    
+    # Two-group LR strategy:
+    #   base_model (image encoder / CLIP visual backbone) -> args.lr        (e.g. 1e-6)
+    #   all other trainable modules (mapping, cross-attn, head, ...)       -> args.lr * args.lr_factor (e.g. 1e-5)
+    print(f'Image encoder lr: {args.lr:.2e}   |   Mapping/head lr: {args.lr * args.lr_factor:.2e}')
+
     for key, value in model.named_parameters():
         if not value.requires_grad:
             continue
-        lr = args.lr
         weight_decay = args.weight_decay
 
-        if "cross" in key:
-            # use large learning rate for random initialized cross modal module
-            lr =  args.lr * args.lr_factor # default 5.0
-        if "bias" in key:
-            lr = args.lr * args.bias_lr_factor
-            weight_decay = args.weight_decay_bias
-        if "classifier" in key or "mlm_head" in key:
+        # Image encoder (CLIP visual backbone kept in base_model)
+        if "base_model" in key:
+            lr = args.lr
+        else:
+            # randomly-initialised mapping, cross-modal, classifier heads, etc.
             lr = args.lr * args.lr_factor
 
-        if "visul_emb_layer" in key:
-            lr =  0.001
-        if "texual_emb_layer" in key:
-            lr =  0.001 
-            
+        # Bias terms: slightly higher lr, lower weight decay
+        if "bias" in key:
+            lr = lr * args.bias_lr_factor
+            weight_decay = args.weight_decay_bias
+
         params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
 
     if args.optimizer == "SGD":

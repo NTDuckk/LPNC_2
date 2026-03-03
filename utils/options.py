@@ -37,7 +37,7 @@ def get_args():
     parser.add_argument("--cmt_depth", type=int, default=2, help="cross modal transformer self attn layers")
     parser.add_argument("--masked_token_rate", type=float, default=0.8, help="masked token rate for mlm task")
     parser.add_argument("--masked_token_unchanged_rate", type=float, default=0.1, help="masked token unchanged rate")
-    parser.add_argument("--lr_factor", type=float, default=5.0, help="lr factor for random init modules")
+    parser.add_argument("--lr_factor", type=float, default=10.0, help="lr factor for random init modules")
     parser.add_argument("--MLM", default=False, action='store_true', help="whether to use MLM dataset")
 
     ######################## loss settings ########################
@@ -70,19 +70,19 @@ def get_args():
 
     ######################## scheduler ########################
     parser.add_argument("--num_epoch", type=int, default=60)
-    parser.add_argument("--milestones", type=int, nargs='+', default=(45, 50))
+    parser.add_argument("--milestones", type=int, nargs='+', default=(20, 40))
     parser.add_argument("--gamma", type=float, default=0.1)
     parser.add_argument("--warmup_factor", type=float, default=0.1)
     parser.add_argument("--warmup_epochs", type=int, default=5)
     parser.add_argument("--warmup_method", type=str, default="linear")
-    parser.add_argument("--lrscheduler", type=str, default="cosine")
+    parser.add_argument("--lrscheduler", type=str, default="step")
     parser.add_argument("--target_lr", type=float, default=0)
     parser.add_argument("--power", type=float, default=0.9)
 
     ######################## dataset ########################
     parser.add_argument("--dataset_name", default="CUHK-PEDES", help="[CUHK-PEDES, ICFG-PEDES, RSTPReid]")
     parser.add_argument("--sampler", default="identity", help="choose sampler from [identity, random]")
-    parser.add_argument("--num_instance", type=int, default=4)
+    parser.add_argument("--num_instance", type=int, default=2)
     parser.add_argument("--root_dir", default="datasets/dataset")
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--test_batch_size", type=int, default=64)
