@@ -49,8 +49,14 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
             # mixed precision forward (autocast only; model weights stay FP16 from CLIP)
             with autocast():
                 ret = model(batch)
-                # sum component losses
-                total_loss = sum([ret[k] for k in ("supcon_loss", "id_loss", "triplet_loss") if k in ret])
+                # Weighted sum of component losses using config lambdas
+                lam1 = getattr(args, "lambda1_weight", 1.0)
+                lam2 = getattr(args, "lambda2_weight", 1.0)
+                lam3 = getattr(args, "lambda3_weight", 1.0)
+                supcon_val = ret.get("supcon_loss", 0.0)
+                id_val = ret.get("id_loss", 0.0)
+                triplet_val = ret.get("triplet_loss", 0.0)
+                total_loss = lam1 * supcon_val + lam2 * id_val + lam3 * triplet_val
 
             batch_size = batch["images"].shape[0]
             meters["loss"].update(float(total_loss.item()), batch_size)
@@ -69,16 +75,7 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
                 for k, v in meters.items():
                     if v.avg > 0:
                         info_str += f", {k}: {v.avg:.4f}"
-                # append current per-batch loss values (from model return dict)
-                current_losses = []
-                for k, val in ret.items():
-                    if "loss" in k:
-                        try:
-                            current_losses.append(f"{k}: {float(val):.4f}")
-                        except Exception:
-                            pass
-                if current_losses:
-                    info_str += ", Curr(" + ", ".join(current_losses) + ")"
+                # per-batch component losses are reported via meters; no extra Curr(...) printing
 
                 info_str += f", Base Lr: {scheduler.get_lr()[0]:.2e}"
                 logger.info(info_str)

@@ -164,6 +164,10 @@ class LPNC(nn.Module):
         self.base_model, base_cfg = build_CLIP_from_openai_pretrained(
             args.pretrain_choice, args.img_size, args.stride_size
         )
+        # Freeze text-related parameters in the base CLIP model so text encoder is not optimized
+        for name, p in self.base_model.named_parameters():
+            if any(k in name for k in ("transformer", "token_embedding", "positional_embedding", "ln_final", "text_projection")):
+                p.requires_grad = False
         self.embed_dim = base_cfg['embed_dim']
 
         self.logit_scale = torch.ones([]) * (1 / args.temperature)
@@ -193,6 +197,7 @@ class LPNC(nn.Module):
         nn.init.normal_(self.cross_attn.out_proj.weight, std=proj_std)
 
         self.text_encoder = TextEncoder(copy.deepcopy(self.base_model))
+        # Freeze the copied text encoder as well (no gradients)
         for p in self.text_encoder.parameters():
             p.requires_grad = False
 
