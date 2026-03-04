@@ -73,7 +73,7 @@ def get_args():
     parser.add_argument("--beta", type=float, default=0.999)
 
     ######################## scheduler ########################
-    parser.add_argument("--num_epoch", type=int, default=60)
+    parser.add_argument("--num_epoch", type=int, default=10)
     parser.add_argument("--milestones", type=int, nargs='+', default=(20, 40))
     parser.add_argument("--gamma", type=float, default=0.1)
     parser.add_argument("--warmup_factor", type=float, default=0.1)
