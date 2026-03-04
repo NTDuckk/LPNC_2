@@ -228,7 +228,13 @@ class Evaluator:
         qfeats = F.normalize(qfeats, p=2, dim=1)
         gfeats = F.normalize(gfeats, p=2, dim=1)
 
-        sims = qfeats @ gfeats.t()
+        # ensure both feature tensors are on the same device for matrix multiplication
+        device = next(model.parameters()).device
+        qfeats = qfeats.to(device)
+        gfeats = gfeats.to(device)
+
+        # compute similarity on device then move to CPU for numpy conversions later
+        sims = (qfeats @ gfeats.t()).cpu()
 
         table = PrettyTable(["task", "R1", "R5", "R10", "mAP", "mINP", "rSum"])
         rs = get_metrics(sims, qids, gids, "t2i", False)
