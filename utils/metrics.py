@@ -234,4 +234,4 @@ class Evaluator:
             "mAP":  float(rs[4]),
             "mINP": float(rs[5]),
             "rSum": float(rs[6]),
-        }
+        }   
