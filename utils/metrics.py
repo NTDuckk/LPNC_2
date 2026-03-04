@@ -153,6 +153,7 @@ class Evaluator:
             img = img.to(device)
             with torch.no_grad():
                 image_tokens = model.encode_image1(img)       # (B, 1+M, D)
+                img_tokens = model.encode_image(img)
                 bsz = image_tokens.shape[0]
 
                 if infer_prompt == "composed":
@@ -188,7 +189,8 @@ class Evaluator:
                 cross_x_bn = model.bottleneck_proj(cross_x.squeeze(1))  # (B, D)
 
             pids_list.append(pid.view(-1).cpu())
-            feats_list.append(cross_x_bn.detach().cpu().float())
+            # feats_list.append(cross_x_bn.detach().cpu().float())
+            feats_list.append(img_tokens)
 
         return torch.cat(pids_list, 0), torch.cat(feats_list, 0)
 
