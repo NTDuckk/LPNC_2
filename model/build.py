@@ -68,59 +68,31 @@ class TextEncoder(nn.Module):
         return text_feature
 
 
-class LocalPseudoWord(nn.Module):
-    """SCGI-style local pseudo-word extraction.
+class LocalMappingNetwork(nn.Module):
+    """Simple mapping network to convert averaged local queries -> S*_local.
 
-    Learnable queries attend to patch features via cross-attention + FFN,
-    then average-pooled and mapped to a pseudo-token (S*_local).
+    This mirrors `IM2TEXT` style: a small MLP that maps a [B, D] vector
+    to the pseudo-word embedding space [B, D]. The cross-attention and
+    query handling are moved into `LPNC`.
     """
-    def __init__(self, embed_dim=512, num_queries=2, num_heads=8, ffn_dim=2048, dropout=0.1):
+    def __init__(self, embed_dim=512, middle_dim=512, output_dim=512, n_layer=2, dropout=0.1):
         super().__init__()
-        self.queries = nn.Parameter(torch.randn(num_queries, embed_dim) * 0.02)
+        self.fc_out = nn.Linear(middle_dim, output_dim)
+        layers = []
+        dim = embed_dim
+        for _ in range(n_layer):
+            layers.append(nn.Sequential(
+                nn.Linear(dim, middle_dim),
+                nn.Dropout(dropout),
+                nn.ReLU(),
+            ))
+            dim = middle_dim
+        self.layers = nn.Sequential(*layers)
 
-        self.ln_q = LayerNorm(embed_dim)
-        self.ln_kv = LayerNorm(embed_dim)
-        self.cross_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
-
-        self.ln_ffn = LayerNorm(embed_dim)
-        self.ffn = nn.Sequential(
-            nn.Linear(embed_dim, ffn_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(ffn_dim, embed_dim),
-            nn.Dropout(dropout),
-        )
-
-        # Mapping network fMl: 3-layer MLP (same depth as SCGI paper)
-        self.mapping = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim),
-            nn.ReLU(),
-            nn.Linear(embed_dim, embed_dim),
-        )
-
-    def forward(self, patch_feats: torch.Tensor) -> torch.Tensor:
-        """Args:
-            patch_feats: [B, M, D]  (local visual tokens, already refined)
-        Returns:
-            s_local: [B, D]  pseudo-word embedding
-        """
-        B = patch_feats.shape[0]
-        Q = self.queries.unsqueeze(0).expand(B, -1, -1)     # [B, K, D]
-
-        # Cross-attention: queries attend to patch features
-        q_normed = self.ln_q(Q)
-        kv_normed = self.ln_kv(patch_feats)
-        qc = Q + self.cross_attn(q_normed, kv_normed, kv_normed, need_weights=False)[0]  # [B, K, D]
-
-        # Feed-forward
-        P = qc + self.ffn(self.ln_ffn(qc))   # [B, K, D]
-
-        # Average pool over K queries -> mapping network
-        avg_p = P.mean(dim=1)                 # [B, D]
-        s_local = self.mapping(avg_p)          # [B, D]
-        return s_local
+    def forward(self, x: torch.Tensor):
+        for layer in self.layers:
+            x = layer(x)
+        return self.fc_out(x)
 
 
 class PromptLearner(nn.Module):
@@ -197,14 +169,41 @@ class LPNC(nn.Module):
         nn.init.normal_(self.cross_attn.in_proj_weight, std=attn_std)
         nn.init.normal_(self.cross_attn.out_proj.weight, std=proj_std)
 
+        
+
         self.text_encoder = TextEncoder(copy.deepcopy(self.base_model))
         # Freeze the copied text encoder as well (no gradients)
         for p in self.text_encoder.parameters():
             p.requires_grad = False
 
         self.img2text = IM2TEXT(embed_dim=512, middle_dim=512, output_dim=512, n_layer=2)       # fMg (S*_global)
-        self.local_pseudo = LocalPseudoWord(embed_dim=self.embed_dim, num_queries=2,              # S*_local (SCGI)
-                            num_heads=self.embed_dim // 64, ffn_dim=self.embed_dim * 4)
+        # Local SCGI-style components: queries + cross-attn + FFN are kept in LPNC.
+        # Learnable local queries (moved from LocalPseudoWord)
+        self.local_num_queries = 2
+        self.local_queries = nn.Parameter(torch.randn(self.local_num_queries, self.embed_dim) * 0.02)
+
+        # Layer norms and cross-attention for local queries attending to patch tokens
+        self.ln_q_local = LayerNorm(self.embed_dim)
+        self.ln_kv_local = LayerNorm(self.embed_dim)
+        self.cross_attn_local = nn.MultiheadAttention(self.embed_dim, self.embed_dim // 64, batch_first=True)
+        # initialize local cross-attention weights now that the module exists
+        nn.init.normal_(self.cross_attn_local.in_proj_weight, std=attn_std)
+        nn.init.normal_(self.cross_attn_local.out_proj.weight, std=proj_std)
+
+        # Local FFN (SCGI-style)
+        self.ln_ffn_local = LayerNorm(self.embed_dim)
+        self.ffn_local = nn.Sequential(
+            nn.Linear(self.embed_dim, self.embed_dim * 4),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.embed_dim * 4, self.embed_dim),
+            nn.Dropout(0.1),
+        )
+
+        # Mapping network that consumes averaged local outputs -> S*_local
+        self.local_mapping = LocalMappingNetwork(embed_dim=self.embed_dim, middle_dim=self.embed_dim,
+                                                output_dim=self.embed_dim, n_layer=3)
+
         self.prompt_learner = PromptLearner(self.base_model.dtype, self.base_model.token_embedding)
 
     def cross_former(self, q, k, v):
@@ -213,6 +212,25 @@ class LPNC(nn.Module):
         x = self.cross_modal_transformer(x)
         x = x[0].unsqueeze(0).permute(1, 0, 2)  # LND -> NLD
         return self.ln_post(x)
+
+    def cross_former_local(self, patch_feats: torch.Tensor) -> torch.Tensor:
+        """SCGI-style local cross-attention + FFN. Returns averaged pooled vector [B, D].
+
+        Args:
+            patch_feats: [B, M, D] local visual tokens (refined)
+        Returns:
+            avg_p: [B, D] averaged pooled output over K learnable queries
+        """
+        B = patch_feats.shape[0]
+        Q = self.local_queries.unsqueeze(0).expand(B, -1, -1)     # [B, K, D]
+
+        q_normed = self.ln_q_local(Q)
+        kv_normed = self.ln_kv_local(patch_feats)
+        qc = Q + self.cross_attn_local(q_normed, kv_normed, kv_normed, need_weights=False)[0]  # [B, K, D]
+
+        P = qc + self.ffn_local(self.ln_ffn_local(qc))   # [B, K, D]
+        avg_p = P.mean(dim=1)  # [B, D]
+        return avg_p
 
     def encode_image(self, image):
         x, _ = self.base_model.encode_image(image)
@@ -251,7 +269,10 @@ class LPNC(nn.Module):
 
             # S*_local   (use refined patch tokens from refined_image_feats)
         patch_feats = refined_image_feats[:, 1:, :].float()                    # [B, M, D]
-        local_features = self.local_pseudo(patch_feats)                              # [B, D]
+
+        # Local SCGI cross-attention: compute averaged pooled local representation in LPNC
+        avg_p = self.cross_former_local(patch_feats)                             # [B, D]
+        local_features = self.local_mapping(avg_p)                               # [B, D]
 
         # S* = S*_global + S*_local
         pseudo_token = token_features + local_features                         # [B, D]

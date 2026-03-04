@@ -163,26 +163,29 @@ class Evaluator:
 
                     # S*_local from patch tokens (no t_feats refinement, no W)
                     patch_feats = image_tokens[:, 1:, :].float()  # (B, M, D)
-                    s_local = model.local_pseudo(patch_feats)      # (B, D)
+
+                    # New LPNC API: run local queries cross-attention + FFN in model,
+                    # then map averaged query outputs to S*_local via local_mapping.
+                    avg_p = model.cross_former_local(patch_feats)  # (B, D)
+                    s_local = model.local_mapping(avg_p)          # (B, D)
 
                     # S* = S*_global + S*_local (keep both in float dtype)
                     pseudo_token = s_global + s_local       # (B, D)
 
-                    with autocast():
-                        prompts = model.prompt_learner(pseudo_token)
-                        text_feature = model.text_encoder(
-                            prompts, model.prompt_learner.tokenized_prompts
-                        )
+                    # Evaluation: avoid mixed-precision/autocast to keep dtypes stable
+                    prompts = model.prompt_learner(pseudo_token)
+                    text_feature = model.text_encoder(
+                        prompts, model.prompt_learner.tokenized_prompts
+                    )
                 else:
                     # simplified: "A photo of a person" (no mapping network)
                     text_feature = fixed_text_feature.expand(bsz, -1)
 
                 # cross-attn  (Q=text_feature, K/V=image_tokens)
-                with autocast():
-                    cross_x = model.cross_former(
-                        text_feature.unsqueeze(1), image_tokens, image_tokens
-                    )
-                    cross_x_bn = model.bottleneck_proj(cross_x.squeeze(1))  # (B, D)
+                cross_x = model.cross_former(
+                    text_feature.unsqueeze(1), image_tokens, image_tokens
+                )
+                cross_x_bn = model.bottleneck_proj(cross_x.squeeze(1))  # (B, D)
 
             pids_list.append(pid.view(-1).cpu())
             feats_list.append(cross_x_bn.detach().cpu().float())
@@ -233,8 +236,8 @@ class Evaluator:
         table.custom_format["R1"] = lambda f, v: f"{v:.2f}"
         table.custom_format["R5"] = lambda f, v: f"{v:.2f}"
         table.custom_format["R10"] = lambda f, v: f"{v:.2f}"
-        table.custom_format["mAP"] = lambda f, v: f"{v:.2f}"
-        table.custom_format["mINP"] = lambda f, v: f"{v:.2f}"
+        table.custom_format["mAP"] = lambda f, v: f"{v:.4f}"
+        table.custom_format["mINP"] = lambda f, v: f"{v:.4f}"
         table.custom_format["rSum"] = lambda f, v: f"{v:.2f}"
 
         self.logger.info("\n" + str(table))
