@@ -204,10 +204,19 @@ class Evaluator:
                 # fallback to composed if tokenizer unavailable
                 infer_prompt = "composed"
 
-        # ---- image-only evaluation: both query & gallery use the same pipeline ----
+        # ---- text queries from txt_loader ----
+        qids_list, qfeats_list = [], []
+        for pid, caption in self.txt_loader:
+            caption = caption.to(device)
+            with torch.no_grad():
+                text_feat = model.encode_text(caption)
+            qids_list.append(pid.view(-1).cpu())
+            qfeats_list.append(text_feat.detach().cpu().float())
+        qids = torch.cat(qids_list, 0)
+        qfeats = torch.cat(qfeats_list, 0)
+
+        # ---- image gallery from img_loader ----
         gids, gfeats = self._process_images(model, self.img_loader, infer_prompt, fixed_text_feature, device)
-        # query = gallery (no captions used)
-        qids, qfeats = gids, gfeats
 
         return qfeats, gfeats, qids, gids
 
@@ -219,11 +228,8 @@ class Evaluator:
 
         sims = qfeats @ gfeats.t()
 
-        # query == gallery -> exclude self-matches (diagonal)
-        sims.fill_diagonal_(-float('inf'))
-
         table = PrettyTable(["task", "R1", "R5", "R10", "mAP", "mINP", "rSum"])
-        rs = get_metrics(sims, qids, gids, "i2i", False)
+        rs = get_metrics(sims, qids, gids, "t2i", False)
         table.add_row(rs)
 
         if i2t_metric:
