@@ -37,6 +37,7 @@ def _run_post_training_viz(args, model, img_loader=None):
 
     # ── 2. XAI heatmaps on a few sample images ────────────────────────────────
     try:
+        import traceback as _tb
         from visualize_xai import visualize_image, load_model as _load_model_xai
 
         # Try to get one batch of images from img_loader
@@ -79,7 +80,8 @@ def _run_post_training_viz(args, model, img_loader=None):
                 )
                 logger.info(f"[viz] XAI saved -> {out_path}")
     except Exception as e:
-        logger.warning(f"[viz] XAI visualization failed: {e}")
+        import traceback as _tb2
+        logger.warning(f"[viz] XAI visualization failed: {e}\n{_tb2.format_exc()}")
 
 
 def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, scheduler, checkpointer):
@@ -180,17 +182,32 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
             )
 
         if epoch % eval_period == 0:
+            # ensure all workers finished the epoch before rank 0 runs evaluation
+            if args.distributed:
+                synchronize()
+
             if get_rank() == 0:
                 logger.info("Validation Results - Epoch: {}".format(epoch))
-                if args.distributed:
-                    top1 = evaluator.eval(model.module.eval())
+                # pass the underlying module (if wrapped) to Evaluator; Evaluator
+                # will call .eval() internally. Avoid calling .eval() here as a
+                # function-return value to keep intent clear.
+                if args.distributed and hasattr(model, "module"):
+                    eval_model = model.module
                 else:
-                    top1 = evaluator.eval(model.eval())
-                now_top1 = max(now_top1, float(top1))
+                    eval_model = model
+
+                eval_result = evaluator.eval(eval_model)
+                top1 = eval_result["R1"]
+                now_top1 = max(now_top1, top1)
+
+                # Log eval metrics to TensorBoard so learning curves show R1/mAP/mINP
+                tb_writer.add_scalar("eval/R1",   eval_result["R1"],   epoch)
+                tb_writer.add_scalar("eval/mAP",  eval_result["mAP"],  epoch)
+                tb_writer.add_scalar("eval/mINP", eval_result["mINP"], epoch)
                 torch.cuda.empty_cache()
 
                 if best_top1 < top1:
-                    best_top1 = float(top1)
+                    best_top1 = top1
                     arguments["epoch"] = epoch
                     checkpointer.save("best", **arguments)
 

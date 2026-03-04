@@ -240,4 +240,11 @@ class Evaluator:
         self.logger.info("\n" + str(table))
         top1 = float(rs[1])
         self.logger.info("\n" + "best R1 = " + str(top1))
-        return top1
+        return {
+            "R1":   float(rs[1]),
+            "R5":   float(rs[2]),
+            "R10":  float(rs[3]),
+            "mAP":  float(rs[4]),
+            "mINP": float(rs[5]),
+            "rSum": float(rs[6]),
+        }

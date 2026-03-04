@@ -108,10 +108,15 @@ class AttentionCollector:
             self._hooks.append(h)
 
     def _hook(self, module, inputs, output):
-        # output của nn.MultiheadAttention: (attn_output, attn_weights)
-        # attn_weights: (B * heads, N, N) hoặc (B, N, N) tuỳ need_weights
-        # Trong ResidualAttentionBlock gọi với need_weights=True -> (B, N, N) trung bình qua heads
-        _, attn_w = output  # (B, N, N)
+        # CLIP's ResidualAttentionBlock calls attention with need_weights=False,
+        # so output[1] is None. Re-run with need_weights=True to get attention weights.
+        attn_w = output[1]
+        if attn_w is None:
+            with torch.no_grad():
+                q, k, v = inputs[0], inputs[1], inputs[2]
+                _, attn_w = module(q, k, v,
+                                   need_weights=True,
+                                   average_attn_weights=True)
         self.attentions.append(attn_w.detach().cpu().float())
 
     def remove(self):
