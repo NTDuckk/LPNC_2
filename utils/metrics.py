@@ -159,7 +159,7 @@ class Evaluator:
                 cross_x_bn = model.bottleneck_proj(cross_x.squeeze(1))  # (B, D)
 
             pids_list.append(pid.view(-1).cpu())
-            feats_list.append(img_tokens)
+            feats_list.append(img_tokens.detach().cpu().float())
             tp_list.append(text_feature.detach().cpu().float())
             cross_list.append(cross_x_bn.detach().cpu().float())
 
