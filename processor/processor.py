@@ -99,6 +99,7 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
     }
 
     tb_writer = SummaryWriter(log_dir=args.output_dir)
+    scaler = GradScaler()
 
     best_top1 = 0.0
     # evaluator.eval(model.eval())
@@ -116,17 +117,23 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
         for n_iter, batch in enumerate(train_loader):
             batch = {k: v.to(device) for k, v in batch.items()}
             index = batch.get('index', None)
-            ret = model(batch)
-            # sum all returned tensors whose key contains 'loss'
-            total_loss = sum([v for k, v in ret.items() if "loss" in k])
+
+            # Mixed-precision forward
+            with autocast():
+                ret = model(batch)
+                # sum all returned tensors whose key contains 'loss'
+                total_loss = sum([v for k, v in ret.items() if "loss" in k])
+
             batch_size = batch['images'].shape[0]
             meters['loss'].update(float(total_loss.item()), batch_size)
             meters['supcon_loss'].update(ret.get('supcon_loss', 0), batch_size)
             meters['id_loss'].update(ret.get('id_loss', 0), batch_size)
             meters['triplet_loss'].update(ret.get('triplet_loss', 0), batch_size)
+
             optimizer.zero_grad()
-            total_loss.backward()
-            optimizer.step()
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             synchronize()
             if (n_iter + 1) % log_period == 0:
                 info_str = f"Epoch[{epoch}] Iteration[{n_iter + 1}/{len(train_loader)}]"
