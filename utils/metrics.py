@@ -193,6 +193,11 @@ class Evaluator:
             model, self.img_loader, infer_prompt, fixed_text_feature, device
         )
 
+        # Use cross-attention features as query features instead of captions
+        # Override qfeats/qids so queries come from cross_feats (per-image)
+        qfeats = cross_feats
+        qids = gids
+
         return qfeats, gfeats, qids, gids, tp_feats, cross_feats
 
     def eval(self, model, i2t_metric=False):

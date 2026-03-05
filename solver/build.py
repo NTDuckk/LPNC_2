@@ -6,6 +6,13 @@ from .lr_scheduler import LRSchedulerWithWarmup
 def build_optimizer(args, model):
     params = []
 
+    # Ensure any copied/frozen text encoder stays frozen even if base_model
+    # text parameters are trainable elsewhere. This makes optimizer skip
+    # parameters whose name contains 'text_encoder'.
+    for n, p in model.named_parameters():
+        if "text_encoder" in n:
+            p.requires_grad = False
+
     # Two-group LR strategy:
     #   base_model (image encoder / CLIP visual backbone) -> args.lr        (e.g. 1e-6)
     #   all other trainable modules (mapping, cross-attn, head, ...)       -> args.lr * args.lr_factor (e.g. 1e-5)
