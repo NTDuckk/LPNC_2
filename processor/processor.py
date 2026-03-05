@@ -197,13 +197,33 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
                     eval_model = model
 
                 eval_result = evaluator.eval(eval_model)
-                top1 = eval_result["R1"]
+                # normalize eval_result to a dict in case evaluator returns a scalar
+                if isinstance(eval_result, dict):
+                    metrics = eval_result
+                else:
+                    try:
+                        top1_val = float(eval_result)
+                    except Exception:
+                        try:
+                            top1_val = float(eval_result.item())
+                        except Exception:
+                            top1_val = 0.0
+                    metrics = {
+                        "R1": top1_val,
+                        "R5": 0.0,
+                        "R10": 0.0,
+                        "mAP": 0.0,
+                        "mINP": 0.0,
+                        "rSum": top1_val,
+                    }
+
+                top1 = metrics["R1"]
                 now_top1 = max(now_top1, top1)
 
                 # Log eval metrics to TensorBoard so learning curves show R1/mAP/mINP
-                tb_writer.add_scalar("eval/R1",   eval_result["R1"],   epoch)
-                tb_writer.add_scalar("eval/mAP",  eval_result["mAP"],  epoch)
-                tb_writer.add_scalar("eval/mINP", eval_result["mINP"], epoch)
+                tb_writer.add_scalar("eval/R1",   metrics["R1"],   epoch)
+                tb_writer.add_scalar("eval/mAP",  metrics.get("mAP", 0.0),  epoch)
+                tb_writer.add_scalar("eval/mINP", metrics.get("mINP", 0.0), epoch)
                 torch.cuda.empty_cache()
 
                 if best_top1 < top1:
