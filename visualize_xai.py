@@ -380,12 +380,48 @@ def load_model(checkpoint_path: Optional[str], device: str) -> object:
         print(f"[info] Loading checkpoint: {checkpoint_path}")
         ckpt = torch.load(checkpoint_path, map_location=device)
         state = ckpt.get("model", ckpt)  # support both formats
-        missing, unexpected = model.load_state_dict(state, strict=False)
+
+        # Strip DataParallel prefix if present
+        def _strip_module_prefix(sd: dict):
+            if all(k.startswith("module.") for k in sd.keys()):
+                return {k.replace("module.", ""): v for k, v in sd.items()}
+            return sd
+
+        state = _strip_module_prefix(state)
+
+        # Filter out keys with shape mismatch to avoid RuntimeError during load
+        model_state = model.state_dict()
+        filtered_state = {}
+        skipped = []
+        for k, v in state.items():
+            if k in model_state:
+                if tuple(v.shape) == tuple(model_state[k].shape):
+                    filtered_state[k] = v
+                else:
+                    skipped.append((k, tuple(v.shape), tuple(model_state[k].shape)))
+            else:
+                # keep keys that do not belong to model; they'll be reported as unexpected
+                filtered_state[k] = v
+
+        if skipped:
+            print(f"[warn] Skipping {len(skipped)} parameter(s) due to shape mismatch:")
+            for s in skipped[:10]:
+                print(f"  - {s[0]}: checkpoint {s[1]} != model {s[2]}")
+            if len(skipped) > 10:
+                print(f"  ... and {len(skipped)-10} more")
+
+        res = model.load_state_dict(filtered_state, strict=False)
+        # load_state_dict may return a NamedTuple(missing_keys, unexpected_keys)
+        try:
+            missing, unexpected = res
+        except Exception:
+            missing, unexpected = [], []
+
         if missing:
             print(f"[warn] Missing keys ({len(missing)}): {missing[:5]} ...")
         if unexpected:
             print(f"[warn] Unexpected keys ({len(unexpected)}): {unexpected[:5]} ...")
-        print("[info] Checkpoint loaded.")
+        print("[info] Checkpoint loaded (with mismatched params skipped).")
     else:
         print("[info] Không có checkpoint – dùng raw CLIP weights.")
 

@@ -5,4 +5,4 @@ python train.py \
 --name LPNC \
 --output_dir 'LPNC_log' \
 --dataset_name $DATASET_NAME \
---num_epoch 60
+--num_epoch 10

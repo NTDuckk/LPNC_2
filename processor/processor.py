@@ -4,16 +4,10 @@ import time
 from pathlib import Path
 import torch
 from torch.cuda.amp import autocast, GradScaler
-
 from utils.meter import AverageMeter
 from utils.metrics import Evaluator
 from utils.comm import get_rank, synchronize
-from torch.utils.tensorboard import SummaryWriter
-
-# Ensure project root is importable for standalone visualize_* scripts
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+from torch.utils.tensorboard import SummaryWriter 
 
 
 def _run_post_training_viz(args, model, img_loader=None):
@@ -83,19 +77,20 @@ def _run_post_training_viz(args, model, img_loader=None):
         import traceback as _tb2
         logger.warning(f"[viz] XAI visualization failed: {e}\n{_tb2.format_exc()}")
 
+def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
+                scheduler, checkpointer):
 
-def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, scheduler, checkpointer):
     log_period = args.log_period
     eval_period = args.eval_period
     device = "cuda"
     num_epoch = args.num_epoch
-
-    arguments = {"num_epoch": num_epoch, "iteration": 0}
+    arguments = {}
+    arguments["num_epoch"] = num_epoch
+    arguments["iteration"] = 0
 
     logger = logging.getLogger("LPNC.train")
-    logger.info("start training")
+    logger.info('start training')
 
-    # keep only supervised ID/contrastive/triplet components
     meters = {
         "loss": AverageMeter(),
         "supcon_loss": AverageMeter(),
@@ -104,142 +99,90 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer, sched
     }
 
     tb_writer = SummaryWriter(log_dir=args.output_dir)
-    scaler = GradScaler()
 
     best_top1 = 0.0
-    now_top1 = 0.0
-
+    # evaluator.eval(model.eval())
+    # train
+    sims = []
+    now_top1 = 0
     for epoch in range(start_epoch, num_epoch + 1):
         start_time = time.time()
-        # step scheduler at start of epoch (consistent with stage2)
-        scheduler.step()
         for meter in meters.values():
             meter.reset()
 
         model.train()
         model.epoch = epoch
-
+    
         for n_iter, batch in enumerate(train_loader):
             batch = {k: v.to(device) for k, v in batch.items()}
-
-            # FP32 model + autocast for mixed-precision efficiency + GradScaler for backward
-            with autocast():
-                ret = model(batch)
-                # Weighted sum of component losses using config lambdas
-                lam1 = getattr(args, "lambda1_weight", 0.5)
-                lam2 = getattr(args, "lambda2_weight", 1.0)
-                lam3 = getattr(args, "lambda3_weight", 1.0)
-                supcon_val = ret.get("supcon_loss", 0.0)
-                id_val = ret.get("id_loss", 0.0)
-                triplet_val = ret.get("triplet_loss", 0.0)
-                total_loss = lam1 * supcon_val + lam2 * id_val + lam3 * triplet_val
-
-            batch_size = batch["images"].shape[0]
-            meters["loss"].update(float(total_loss.item()), batch_size)
-            # keep per-component meters
-            meters["supcon_loss"].update(float(ret.get("supcon_loss", 0.0)), batch_size)
-            meters["id_loss"].update(float(ret.get("id_loss", 0.0)), batch_size)
-            meters["triplet_loss"].update(float(ret.get("triplet_loss", 0.0)), batch_size)
-
+            index = batch.get('index', None)
+            ret = model(batch)
+            # sum all returned tensors whose key contains 'loss'
+            total_loss = sum([v for k, v in ret.items() if "loss" in k])
+            batch_size = batch['images'].shape[0]
+            meters['loss'].update(float(total_loss.item()), batch_size)
+            meters['supcon_loss'].update(ret.get('supcon_loss', 0), batch_size)
+            meters['id_loss'].update(ret.get('id_loss', 0), batch_size)
+            meters['triplet_loss'].update(ret.get('triplet_loss', 0), batch_size)
             optimizer.zero_grad()
-            scaler.scale(total_loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            total_loss.backward()
+            optimizer.step()
             synchronize()
-
             if (n_iter + 1) % log_period == 0:
                 info_str = f"Epoch[{epoch}] Iteration[{n_iter + 1}/{len(train_loader)}]"
+                # log loss and acc info
                 for k, v in meters.items():
                     if v.avg > 0:
                         info_str += f", {k}: {v.avg:.4f}"
-                # per-batch component losses are reported via meters; no extra Curr(...) printing
-
                 info_str += f", Base Lr: {scheduler.get_lr()[0]:.2e}"
                 logger.info(info_str)
-                # also print to stdout for immediate visibility
-                try:
-                    print(info_str, flush=True)
-                except Exception:
-                    pass
+    
 
-        # tensorboard
-        tb_writer.add_scalar("lr", scheduler.get_lr()[0], epoch)
-        if "temperature" in ret:
-            tb_writer.add_scalar("temperature", float(ret["temperature"]), epoch)
+        tb_writer.add_scalar('lr', scheduler.get_lr()[0], epoch)
+        if 'temperature' in ret:
+            try:
+                tb_writer.add_scalar('temperature', float(ret.get('temperature')), epoch)
+            except Exception:
+                pass
         for k, v in meters.items():
             if v.avg > 0:
                 tb_writer.add_scalar(k, v.avg, epoch)
 
-        # scheduler already stepped at start of epoch
-
+        scheduler.step()
         if get_rank() == 0:
             end_time = time.time()
             time_per_batch = (end_time - start_time) / (n_iter + 1)
             logger.info(
-                "Epoch {} done. Time per batch: {:.3f}[s] Speed: {:.1f}[samples/s]".format(
-                    epoch, time_per_batch, train_loader.batch_size / time_per_batch
-                )
-            )
-
+                "Epoch {} done. Time per batch: {:.3f}[s] Speed: {:.1f}[samples/s]"
+                .format(epoch, time_per_batch,
+                        train_loader.batch_size / time_per_batch))
         if epoch % eval_period == 0:
-            # ensure all workers finished the epoch before rank 0 runs evaluation
-            if args.distributed:
-                synchronize()
-
             if get_rank() == 0:
                 logger.info("Validation Results - Epoch: {}".format(epoch))
-                # pass the underlying module (if wrapped) to Evaluator; Evaluator
-                # will call .eval() internally. Avoid calling .eval() here as a
-                # function-return value to keep intent clear.
-                if args.distributed and hasattr(model, "module"):
-                    eval_model = model.module
+                if args.distributed:
+                    top1 = evaluator.eval(model.module.eval())
                 else:
-                    eval_model = model
-
-                eval_result = evaluator.eval(eval_model)
-                # normalize eval_result to a dict in case evaluator returns a scalar
-                if isinstance(eval_result, dict):
-                    metrics = eval_result
-                else:
-                    try:
-                        top1_val = float(eval_result)
-                    except Exception:
-                        try:
-                            top1_val = float(eval_result.item())
-                        except Exception:
-                            top1_val = 0.0
-                    metrics = {
-                        "R1": top1_val,
-                        "R5": 0.0,
-                        "R10": 0.0,
-                        "mAP": 0.0,
-                        "mINP": 0.0,
-                        "rSum": top1_val,
-                    }
-
-                top1 = metrics["R1"]
-                now_top1 = max(now_top1, top1)
-
-                # Log eval metrics to TensorBoard so learning curves show R1/mAP/mINP
-                tb_writer.add_scalar("eval/R1",   metrics["R1"],   epoch)
-                tb_writer.add_scalar("eval/mAP",  metrics.get("mAP", 0.0),  epoch)
-                tb_writer.add_scalar("eval/mINP", metrics.get("mINP", 0.0), epoch)
+                    top1 = evaluator.eval(model.eval())
+                now_top1 = max(now_top1,top1)
                 torch.cuda.empty_cache()
-
                 if best_top1 < top1:
                     best_top1 = top1
                     arguments["epoch"] = epoch
                     checkpointer.save("best", **arguments)
 
     if get_rank() == 0:
-        logger.info(f"best R1: {best_top1} at epoch {arguments.get('epoch', -1)}")
-        # Auto-run visualizations after training completes
-        _run_post_training_viz(args, model, img_loader=evaluator.img_loader)
+        logger.info(f"best R1: {best_top1} at epoch {arguments['epoch']}")
+        # Auto-run visualizations after training completes (rank 0 only)
+        try:
+            _run_post_training_viz(args, model, img_loader=evaluator.img_loader)
+        except Exception as e:
+            logger.warning(f"[viz] post-training viz failed: {e}")
 
+                
+def do_inference(model, test_img_loader, test_txt_loader, refer_loader,args):
 
-def do_inference(model, test_img_loader, test_txt_loader, refer_loader, args):
     logger = logging.getLogger("LPNC.test")
     logger.info("Enter inferencing")
 
-    evaluator = Evaluator(test_img_loader, test_txt_loader, refer_loader, args)
-    _ = evaluator.eval(model.eval())
+    evaluator = Evaluator(test_img_loader, test_txt_loader, refer_loader,args)
+    top1 = evaluator.eval(model.eval())
