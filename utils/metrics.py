@@ -118,7 +118,7 @@ class Evaluator:
         Simplified:
           fixed prompt "A photo of a person" -> cross_attn(text, image) -> BN
         """
-        pids_list, feats_list = [], []
+        pids_list, feats_list, tp_list, cross_list = [], [], [], []
         for pid, img in img_loader:
             img = img.to(device)
             with torch.no_grad():
@@ -159,10 +159,11 @@ class Evaluator:
                 cross_x_bn = model.bottleneck_proj(cross_x.squeeze(1))  # (B, D)
 
             pids_list.append(pid.view(-1).cpu())
-            # feats_list.append(cross_x_bn.detach().cpu().float())
             feats_list.append(img_tokens)
+            tp_list.append(text_feature.detach().cpu().float())
+            cross_list.append(cross_x_bn.detach().cpu().float())
 
-        return torch.cat(pids_list, 0), torch.cat(feats_list, 0)
+        return torch.cat(pids_list, 0), torch.cat(feats_list, 0), torch.cat(tp_list, 0), torch.cat(cross_list, 0)
 
     def _compute_embedding(self, model):
         model = model.eval()
@@ -188,50 +189,57 @@ class Evaluator:
         qfeats = torch.cat(qfeats_list, 0)
 
         # ---- image gallery from img_loader ----
-        gids, gfeats = self._process_images(model, self.img_loader, infer_prompt, fixed_text_feature, device)
+        gids, gfeats, tp_feats, cross_feats = self._process_images(
+            model, self.img_loader, infer_prompt, fixed_text_feature, device
+        )
 
-        return qfeats, gfeats, qids, gids
+        return qfeats, gfeats, qids, gids, tp_feats, cross_feats
 
     def eval(self, model, i2t_metric=False):
-        qfeats, gfeats, qids, gids = self._compute_embedding(model)
+        qfeats, gfeats, qids, gids, gtps, gcross = self._compute_embedding(model)
 
         qfeats = F.normalize(qfeats, p=2, dim=1)
         gfeats = F.normalize(gfeats, p=2, dim=1)
+        gtps = F.normalize(gtps, p=2, dim=1)
+        gcross = F.normalize(gcross, p=2, dim=1)
 
-        # ensure both feature tensors are on the same device for matrix multiplication
-        device = next(model.parameters()).device
-        qfeats = qfeats.to(device)
-        gfeats = gfeats.to(device)
+        sims_bge = (qfeats @ gfeats.t())
+        gtp_sims = (qfeats @ gtps.t())
+        gcross_sims = (qfeats @ gcross.t())
 
-        # compute similarity on device then move to CPU for numpy conversions later
-        sims = (qfeats @ gfeats.t()).cpu()
+        # move to CPU for the ranking functions which expect CPU tensors/arrays
+        sims_bge = sims_bge.cpu()
+        gtp_sims = gtp_sims.cpu()
+        gcross_sims = gcross_sims.cpu()
+
+        sims_dict = {
+            "BGE": sims_bge,
+            "GTP": gtp_sims,
+            "GCROSS": gcross_sims,
+            "BGE+GTP(0.32)": 0.32 * sims_bge + 0.68 * gtp_sims,
+            "BGE+GCROSS(0.32)": 0.32 * sims_bge + 0.68 * gcross_sims,
+        }
 
         table = PrettyTable(["task", "R1", "R5", "R10", "mAP", "mINP", "rSum"])
-        rs = get_metrics(sims, qids, gids, "t2i", False)
-        table.add_row(rs)
 
-        if i2t_metric:
-            i2t_cmc, i2t_mAP, i2t_mINP, _ = rank(
-                similarity=sims.t(), q_pids=gids, g_pids=qids, max_rank=10, get_mAP=True
-            )
-            i2t_cmc, i2t_mAP, i2t_mINP = i2t_cmc.numpy(), i2t_mAP.numpy(), i2t_mINP.numpy()
-            table.add_row(["i2t", i2t_cmc[0], i2t_cmc[4], i2t_cmc[9], i2t_mAP, i2t_mINP, i2t_cmc[0] + i2t_cmc[4] + i2t_cmc[9]])
+        top1 = 0
+        for key, sims in sims_dict.items():
+            rs = get_metrics(sims, qids, gids, f"{key}-t2i", False)
+            table.add_row(rs)
+            if i2t_metric:
+                i2t_cmc, i2t_mAP, i2t_mINP, _ = rank(similarity=sims.t(), q_pids=gids, g_pids=qids, max_rank=10, get_mAP=True)
+                i2t_cmc, i2t_mAP, i2t_mINP = i2t_cmc.numpy(), i2t_mAP.numpy(), i2t_mINP.numpy()
+                table.add_row(["i2t", i2t_cmc[0], i2t_cmc[4], i2t_cmc[9], i2t_mAP, i2t_mINP, i2t_cmc[0] + i2t_cmc[4] + i2t_cmc[9]])
+            top1 = max(top1, rs[1])
 
         table.custom_format["R1"] = lambda f, v: f"{v:.2f}"
         table.custom_format["R5"] = lambda f, v: f"{v:.2f}"
         table.custom_format["R10"] = lambda f, v: f"{v:.2f}"
-        table.custom_format["mAP"] = lambda f, v: f"{v:.4f}"
-        table.custom_format["mINP"] = lambda f, v: f"{v:.4f}"
+        table.custom_format["mAP"] = lambda f, v: f"{v:.2f}"
+        table.custom_format["mINP"] = lambda f, v: f"{v:.2f}"
         table.custom_format["rSum"] = lambda f, v: f"{v:.2f}"
 
         self.logger.info("\n" + str(table))
-        top1 = float(rs[1])
         self.logger.info("\n" + "best R1 = " + str(top1))
-        return {
-            "R1":   float(rs[1]),
-            "R5":   float(rs[2]),
-            "R10":  float(rs[3]),
-            "mAP":  float(rs[4]),
-            "mINP": float(rs[5]),
-            "rSum": float(rs[6]),
-        }   
+
+        return top1
