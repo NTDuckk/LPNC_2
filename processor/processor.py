@@ -3,6 +3,7 @@ import sys
 import time
 from pathlib import Path
 import torch
+from collections import defaultdict
 from torch.cuda.amp import autocast, GradScaler
 from utils.meter import AverageMeter
 from utils.metrics import Evaluator
@@ -194,56 +195,94 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
                         img_loader = getattr(evaluator, 'img_loader', None)
                         txt_loader = getattr(evaluator, 'txt_loader', None)
                         if img_loader is not None and txt_loader is not None:
-                            for i_iter, ((img_pids, imgs), (txt_pids, captions)) in enumerate(zip(img_loader, txt_loader)):
-                                # build batch dict compatible with model.forward
-                                pids_tensor = txt_pids
-                                if hasattr(pids_tensor, 'to'):
-                                    pids_tensor = pids_tensor.to(device_eff)
+                            # Build mapping pid -> list[captions] from txt_loader
+                            caption_map = defaultdict(list)
+                            txt_count = 0
+                            for txt_pids, captions in txt_loader:
+                                for i in range(len(txt_pids)):
+                                    pid_val = int(txt_pids[i].item()) if hasattr(txt_pids[i], 'item') else int(txt_pids[i])
+                                    caption_map[pid_val].append(captions[i].cpu())
+                                    txt_count += 1
+
+                            num_classes = None
+                            try:
+                                num_classes = effective_model.classifier_proj.out_features
+                            except Exception:
+                                pass
+
+                            i_iter = 0
+                            # Iterate image batches and align with one caption per image
+                            for img_pids, imgs in img_loader:
+                                aligned_imgs = []
+                                aligned_caps = []
+                                aligned_pids = []
+
+                                for j in range(len(img_pids)):
+                                    pid_img = int(img_pids[j].item()) if hasattr(img_pids[j], 'item') else int(img_pids[j])
+
+                                    # direct match
+                                    cap_list = caption_map.get(pid_img, None)
+
+                                    # try 1-based -> 0-based if no match
+                                    if cap_list is None and num_classes is not None:
+                                        pid_try = pid_img - 1
+                                        cap_list = caption_map.get(pid_try, None)
+                                        if cap_list is not None:
+                                            pid_img = pid_try
+
+                                    if not cap_list:
+                                        logger.warning(f"Missing caption for pid={pid_img}; skipping this sample in eval loss")
+                                        continue
+
+                                    cap = cap_list.pop(0)
+                                    aligned_pids.append(pid_img)
+                                    aligned_imgs.append(imgs[j].unsqueeze(0))
+                                    aligned_caps.append(cap.unsqueeze(0) if cap.dim()==1 else cap.unsqueeze(0))
+
+                                if not aligned_imgs:
+                                    continue
+
+                                # create batch
+                                try:
+                                    batch_images = torch.cat(aligned_imgs, dim=0).to(device_eff)
+                                except Exception:
+                                    batch_images = torch.stack([t.squeeze(0) for t in aligned_imgs], dim=0).to(device_eff)
+                                batch_captions = torch.cat(aligned_caps, dim=0).to(device_eff)
+                                batch_pids = torch.tensor(aligned_pids, dtype=torch.long, device=device_eff)
+
+                                # final pid range check: try subtracting 1 if out-of-range; otherwise skip
+                                if num_classes is not None:
+                                    if batch_pids.max() >= num_classes or batch_pids.min() < 0:
+                                        batch_pids2 = batch_pids - 1
+                                        if batch_pids2.max() < num_classes and batch_pids2.min() >= 0:
+                                            batch_pids = batch_pids2
+                                            logger.info("Adjusted eval pids by -1 to match class range")
+                                        else:
+                                            logger.warning(f"Eval batch pids out-of-range (min={int(batch_pids.min())}, max={int(batch_pids.max())}); skipping batch")
+                                            continue
 
                                 batch = {
-                                    'pids': pids_tensor,
-                                    'images': imgs.to(device_eff),
-                                    'caption_ids': captions.to(device_eff),
+                                    'pids': batch_pids,
+                                    'images': batch_images,
+                                    'caption_ids': batch_captions,
                                 }
-
-                                # Ensure pids are in valid range for classifier to avoid NLL asserts
-                                try:
-                                    num_classes = effective_model.classifier_proj.out_features
-                                    if torch.is_tensor(batch['pids']):
-                                        lp = batch['pids'].long()
-                                        if lp.max() >= num_classes or lp.min() < 0:
-                                            # try common fix: val/test pids often 1-based -> subtract 1
-                                            lp2 = lp - 1
-                                            if lp2.max() < num_classes and lp2.min() >= 0:
-                                                batch['pids'] = lp2
-                                                logger.info("Adjusted eval pids by -1 to match class range")
-                                            else:
-                                                # fallback: wrap into range to avoid device assert (may be noisy)
-                                                batch['pids'] = (lp % num_classes)
-                                                logger.warning("Eval pids out-of-range; applied modulo mapping to fit classifier range")
-                                except Exception:
-                                    # if anything goes wrong inspecting classifier, continue and let model handle or fail
-                                    pass
 
                                 with autocast():
                                     ret = effective_model(batch)
 
                                 total_loss = sum([v for k, v in ret.items() if "loss" in k])
 
-                                bsz = 1
-                                try:
-                                    bsz = batch['images'].shape[0]
-                                except Exception:
-                                    bsz = 1
+                                bsz = batch['images'].shape[0] if hasattr(batch['images'], 'shape') else 1
 
                                 eval_meters['loss'].update(float(total_loss.item()), bsz)
                                 eval_meters['supcon_loss'].update(float(ret.get('supcon_loss', 0)), bsz)
                                 eval_meters['id_loss'].update(float(ret.get('id_loss', 0)), bsz)
                                 eval_meters['triplet_loss'].update(float(ret.get('triplet_loss', 0)), bsz)
 
-                                if (i_iter + 1) % max(1, getattr(args, 'log_period', 50)) == 0:
+                                i_iter += 1
+                                if (i_iter) % max(1, getattr(args, 'log_period', 50)) == 0:
                                     logger.info(
-                                        f"Epoch[{epoch}] Eval Iter[{i_iter + 1}/{len(img_loader)}], avg_loss: {eval_meters['loss'].avg:.4f}"
+                                        f"Epoch[{epoch}] Eval Iter[{i_iter}], avg_loss: {eval_meters['loss'].avg:.4f}"
                                     )
 
                         else:
