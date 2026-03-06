@@ -211,7 +211,7 @@ class GradCAMViT:
         image_tensor: (1,3,H,W) float32 hay float16
         """
         self.model.eval()
-        image_tensor = image_tensor.to(device).half()
+        image_tensor = image_tensor.to(device).float()
 
         # Forward – cần grad
         image_tensor.requires_grad_(False)
@@ -299,7 +299,7 @@ def visualize_image(model,
 
         model.eval()
         with torch.no_grad():
-            img_in = img_tensor.to(device).half()
+            img_in = img_tensor.to(device).float()
             model.base_model.visual(img_in)
 
         collector.remove()
