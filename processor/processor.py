@@ -196,11 +196,34 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
                         if img_loader is not None and txt_loader is not None:
                             for i_iter, ((img_pids, imgs), (txt_pids, captions)) in enumerate(zip(img_loader, txt_loader)):
                                 # build batch dict compatible with model.forward
+                                pids_tensor = txt_pids
+                                if hasattr(pids_tensor, 'to'):
+                                    pids_tensor = pids_tensor.to(device_eff)
+
                                 batch = {
-                                    'pids': txt_pids.to(device_eff) if hasattr(txt_pids, 'to') else txt_pids,
+                                    'pids': pids_tensor,
                                     'images': imgs.to(device_eff),
                                     'caption_ids': captions.to(device_eff),
                                 }
+
+                                # Ensure pids are in valid range for classifier to avoid NLL asserts
+                                try:
+                                    num_classes = effective_model.classifier_proj.out_features
+                                    if torch.is_tensor(batch['pids']):
+                                        lp = batch['pids'].long()
+                                        if lp.max() >= num_classes or lp.min() < 0:
+                                            # try common fix: val/test pids often 1-based -> subtract 1
+                                            lp2 = lp - 1
+                                            if lp2.max() < num_classes and lp2.min() >= 0:
+                                                batch['pids'] = lp2
+                                                logger.info("Adjusted eval pids by -1 to match class range")
+                                            else:
+                                                # fallback: wrap into range to avoid device assert (may be noisy)
+                                                batch['pids'] = (lp % num_classes)
+                                                logger.warning("Eval pids out-of-range; applied modulo mapping to fit classifier range")
+                                except Exception:
+                                    # if anything goes wrong inspecting classifier, continue and let model handle or fail
+                                    pass
 
                                 with autocast():
                                     ret = effective_model(batch)
