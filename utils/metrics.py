@@ -123,7 +123,7 @@ class Evaluator:
             img = img.to(device)
             with torch.no_grad():
                 image_tokens = model.encode_image1(img)       # (B, 1+M, D)
-                img_tokens = model.encode_image(img)
+                img_tokens = model.encode_image(img).cpu()
                 bsz = image_tokens.shape[0]
 
                 if infer_prompt == "composed":
@@ -158,12 +158,12 @@ class Evaluator:
                 )
                 cross_x_bn = model.bottleneck_proj(cross_x.squeeze(1))  # (B, D)
 
-            pids_list.append(pid.view(-1).cpu())
-            feats_list.append(img_tokens.detach().cpu().float())
-            tp_list.append(text_feature.detach().cpu().float())
-            cross_list.append(cross_x_bn.detach().cpu().float())
+            pids_list.append(pid.view(-1))
+            feats_list.append(img_tokens)
+            tp_list.append(text_feature.cpu().float())
+            cross_list.append(cross_x_bn.cpu().float())
 
-        return torch.cat(pids_list, 0), torch.cat(feats_list, 0), torch.cat(tp_list, 0), torch.cat(cross_list, 0)
+        return torch.cat(pids_list, 0).cpu(), torch.cat(feats_list, 0).cpu(), torch.cat(tp_list, 0).cpu(), torch.cat(cross_list, 0).cpu()
 
     def _compute_embedding(self, model):
         model = model.eval()
@@ -178,16 +178,16 @@ class Evaluator:
                 infer_prompt = "composed"
 
         # ---- text queries from txt_loader ----
-        qids_list, qfeats_list = [], []
-        for pid, caption in self.txt_loader:
-            caption = caption.to(device)
-            with torch.no_grad():
-                text_feat = model.encode_text(caption)
-            qids_list.append(pid.view(-1).cpu())
-            qfeats_list.append(text_feat.detach().cpu().float())
-        qids = torch.cat(qids_list, 0)
-        qfeats = torch.cat(qfeats_list, 0)
-
+        # qids_list, qfeats_list = [], []
+        # for pid, caption in self.txt_loader:
+        #     caption = caption.to(device)
+        #     with torch.no_grad():
+        #         text_feat = model.encode_text(caption)
+        #     qids_list.append(pid.view(-1).cpu())
+        #     qfeats_list.append(text_feat)
+        # qids = torch.cat(qids_list, 0)
+        # qfeats = torch.cat(qfeats_list, 0)
+        
         # ---- image gallery from img_loader ----
         gids, gfeats, tp_feats, cross_feats = self._process_images(
             model, self.img_loader, infer_prompt, fixed_text_feature, device
@@ -205,24 +205,24 @@ class Evaluator:
 
         qfeats = F.normalize(qfeats, p=2, dim=1)
         gfeats = F.normalize(gfeats, p=2, dim=1)
-        gtps = F.normalize(gtps, p=2, dim=1)
+        # gtps = F.normalize(gtps, p=2, dim=1)
         gcross = F.normalize(gcross, p=2, dim=1)
 
         sims_bge = (qfeats @ gfeats.t())
-        gtp_sims = (qfeats @ gtps.t())
-        gcross_sims = (qfeats @ gcross.t())
+        # gtp_sims = (qfeats @ gtps.t())
+        # gcross_sims = (qfeats @ gcross.t())
 
         # move to CPU for the ranking functions which expect CPU tensors/arrays
         sims_bge = sims_bge.cpu()
-        gtp_sims = gtp_sims.cpu()
-        gcross_sims = gcross_sims.cpu()
+        # gtp_sims = gtp_sims.cpu()
+        # gcross_sims = gcross_sims.cpu()
 
         sims_dict = {
             "BGE": sims_bge,
-            "GTP": gtp_sims,
-            "GCROSS": gcross_sims,
-            "BGE+GTP(0.32)": 0.32 * sims_bge + 0.68 * gtp_sims,
-            "BGE+GCROSS(0.32)": 0.32 * sims_bge + 0.68 * gcross_sims,
+            # "GTP": gtp_sims,
+            # "GCROSS": gcross_sims,
+            # "BGE+GTP(0.32)": 0.32 * sims_bge + 0.68 * gtp_sims,
+            # "BGE+GCROSS(0.32)": 0.32 * sims_bge + 0.68 * gcross_sims,
         }
 
         table = PrettyTable(["task", "R1", "R5", "R10", "mAP", "mINP", "rSum"])
