@@ -166,16 +166,79 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
         if epoch % eval_period == 0:
             if get_rank() == 0:
                 logger.info("Validation Results - Epoch: {}".format(epoch))
-                if args.distributed:
-                    top1 = evaluator.eval(model.module.eval())
-                else:
-                    top1 = evaluator.eval(model.eval())
-                now_top1 = max(now_top1,top1)
-                torch.cuda.empty_cache()
-                if best_top1 < top1:
-                    best_top1 = top1
-                    arguments["epoch"] = epoch
-                    checkpointer.save("best", **arguments)
+                    if args.distributed:
+                        top1 = evaluator.eval(model.module.eval())
+                    else:
+                        top1 = evaluator.eval(model.eval())
+
+                    now_top1 = max(now_top1, top1)
+                    torch.cuda.empty_cache()
+
+                    # --- Compute losses on validation set (no weight updates) ---
+                    try:
+                        eval_meters = {
+                            "loss": AverageMeter(),
+                            "supcon_loss": AverageMeter(),
+                            "id_loss": AverageMeter(),
+                            "triplet_loss": AverageMeter(),
+                        }
+
+                        # Use the underlying model if wrapped by DDP
+                        effective_model = model.module if hasattr(model, 'module') else model
+                        effective_model.eval()
+
+                        device_eff = next(effective_model.parameters()).device
+
+                        with torch.no_grad():
+                            # evaluator holds val_img_loader and val_txt_loader
+                            img_loader = getattr(evaluator, 'img_loader', None)
+                            txt_loader = getattr(evaluator, 'txt_loader', None)
+                            if img_loader is not None and txt_loader is not None:
+                                for i_iter, ((img_pids, imgs), (txt_pids, captions)) in enumerate(zip(img_loader, txt_loader)):
+                                    # build batch dict compatible with model.forward
+                                    batch = {
+                                        'pids': txt_pids.to(device_eff) if hasattr(txt_pids, 'to') else txt_pids,
+                                        'images': imgs.to(device_eff),
+                                        'caption_ids': captions.to(device_eff),
+                                    }
+
+                                    with autocast():
+                                        ret = effective_model(batch)
+
+                                    total_loss = sum([v for k, v in ret.items() if "loss" in k])
+
+                                    bsz = 1
+                                    try:
+                                        bsz = batch['images'].shape[0]
+                                    except Exception:
+                                        bsz = 1
+
+                                    eval_meters['loss'].update(float(total_loss.item()), bsz)
+                                    eval_meters['supcon_loss'].update(float(ret.get('supcon_loss', 0)), bsz)
+                                    eval_meters['id_loss'].update(float(ret.get('id_loss', 0)), bsz)
+                                    eval_meters['triplet_loss'].update(float(ret.get('triplet_loss', 0)), bsz)
+
+                                    if (i_iter + 1) % max(1, getattr(args, 'log_period', 50)) == 0:
+                                        logger.info(
+                                            f"Epoch[{epoch}] Eval Iter[{i_iter + 1}/{len(img_loader)}], avg_loss: {eval_meters['loss'].avg:.4f}"
+                                        )
+
+                            else:
+                                logger.warning("Evaluator does not expose paired img/txt loaders for loss computation.")
+
+                        # Log averaged eval losses
+                        logger.info(
+                            "Eval losses - avg_loss: {:.4f}, supcon: {:.4f}, id: {:.4f}, triplet: {:.4f}".format(
+                                eval_meters['loss'].avg, eval_meters['supcon_loss'].avg, eval_meters['id_loss'].avg, eval_meters['triplet_loss'].avg
+                            )
+                        )
+                    except Exception as _e:
+                        logger.warning(f"Validation loss computation failed: {_e}")
+
+                    if best_top1 < top1:
+                        best_top1 = top1
+                        arguments["epoch"] = epoch
+                        checkpointer.save("best", **arguments)
 
     if get_rank() == 0:
         logger.info(f"best R1: {best_top1} at epoch {arguments['epoch']}")
