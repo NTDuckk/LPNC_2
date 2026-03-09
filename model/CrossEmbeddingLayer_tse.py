@@ -59,7 +59,6 @@ class TexualEmbeddingLayer(nn.Module):
         self.ratio = ratio
 
     def forward(self, features, text, atten):
-        # print(atten) 64 x 77 x 77
         mask =  ((text != 0) + 0)
         lengths = mask.sum(1).view(-1) - 2 # -2 for SOS token and EOS token
         k = int((atten.size(1)-2)*self.ratio)
@@ -75,7 +74,7 @@ class TexualEmbeddingLayer(nn.Module):
 
         lengths = torch.Tensor([lengths[i] if lengths[i] < k else k for i in range(bs)]) # Keep at least K
         
-        cap_emb = self.linear(features.half())
+        cap_emb = self.linear(features)   # <--- BỎ .half()
         features = self.mlp(features) + cap_emb
         features = maxk_pool1d_var(features, 1, 1, lengths.to(cap_emb.device))  # max 
         
@@ -100,8 +99,8 @@ class VisualEmbeddingLayer(nn.Module):
         atten_topK = atten_topK.unsqueeze(-1).expand(bs, k, base_features.size(2)) # 64 x k x 512
         base_features = torch.gather(input=base_features,dim=1,index=atten_topK)  # 64 x k x 512
         base_features = l2norm(base_features, dim=-1) 
-        base_features = base_features.half()
-        feat_lengths = torch.zeros(base_features.size(0)).to(base_features.device).half()
+        base_features = base_features  # <--- BỎ .half()
+        feat_lengths = torch.zeros(base_features.size(0)).to(base_features.device)  # <--- BỎ .half()
         feat_lengths[:] = base_features.size(1)
         
         features = self.fc(base_features)
