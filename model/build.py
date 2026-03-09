@@ -231,14 +231,16 @@ class LPNC(nn.Module):
         t_tse_f = self.texual_emb_layer(text_feats, caption_ids, atten_t)
 
         if 'supid' in self.current_task:
-            token_features = self.img2text(i_feats.half())
+            # token_features = self.img2text(i_feats.half())
+            token_features = self.img2text(i_feats)
             with autocast():
                 prompts = self.prompt_learner(token_features + t_feats @ self.W)
                 text_feature = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
 
                 cross_x = self.cross_former(text_feature.unsqueeze(1), image_feats, image_feats)
                 cross_x_bn = self.bottleneck_proj(cross_x.squeeze(1))
-                cls_score = self.classifier_proj(cross_x_bn.half()).float()
+                # cls_score = self.classifier_proj(cross_x_bn.half()).float()
+                cls_score = self.classifier_proj(cross_x_bn).float()
             supcon_loss = supcon(i_feats, text_feature.float(), batch['pids'], batch['pids']) + supcon(text_feature.float(),i_feats,batch['pids'],batch['pids'])
             cross_id_loss = objectives.compute_id(cls_score, batch['pids']) 
             ret.update({'supid_loss': self.args.lambda1_weight * supcon_loss + self.args.lambda2_weight * cross_id_loss})
@@ -278,12 +280,16 @@ class LPNC(nn.Module):
             nlabels_ = nlabels_.to(device)
             closs2 =  objectives.compute_cid(cross_modal_logits1_, cross_modal_logits2_,nlabels_)
 
-            image_logits = self.classifier_id_bge(i_feats.half()).float()
-            text_logits = self.classifier_id_bge(t_feats.half()).float()
+            # image_logits = self.classifier_id_bge(i_feats.half()).float()
+            # text_logits = self.classifier_id_bge(t_feats.half()).float()
+            image_logits = self.classifier_id_bge(i_feats)
+            text_logits = self.classifier_id_bge(t_feats)
             closs3 = objectives.compute_id(image_logits, batch['pids']) + objectives.compute_id(text_logits, batch['pids'])
             
-            image_logits_ = self.classifier_id_tse(i_tse_f.half()).float()
-            text_logits_ = self.classifier_id_tse(t_tse_f.half()).float()
+            # image_logits_ = self.classifier_id_tse(i_tse_f.half()).float()
+            # text_logits_ = self.classifier_id_tse(t_tse_f.half()).float()
+            image_logits_ = self.classifier_id_tse(i_tse_f)
+            text_logits_ = self.classifier_id_tse(t_tse_f)
             closs4 = objectives.compute_id(image_logits_, batch['pids']) + objectives.compute_id(text_logits_, batch['pids'])
             ret.update({'cid_loss': closs1+closs2+closs3+closs4})
 
@@ -338,5 +344,5 @@ class PromptLearner(nn.Module):
 def build_model(args, num_classes=11003):
     model = LPNC(args, num_classes)
     # covert model to fp16
-    convert_weights(model)
+    # convert_weights(model)
     return model
