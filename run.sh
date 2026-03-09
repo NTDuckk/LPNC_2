@@ -5,4 +5,7 @@ python train.py \
 --name LPNC \
 --output_dir 'LPNC_log' \
 --dataset_name $DATASET_NAME \
---num_epoch 5
+--loss_names 'supid+cotrl+cid' \
+--batch_size 64 \
+--accumulation_steps 8 \
+--num_epoch 60
