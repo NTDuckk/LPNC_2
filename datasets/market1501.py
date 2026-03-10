@@ -48,6 +48,11 @@ class Market1501(BaseDataset):
 
         self._check_before_run()
 
+        # thêm 3 dòng này
+        self.train_annos = self._load_annotation_records(self.train_anno_path)
+        self.test_annos = self._load_annotation_records(self.gallery_anno_path)
+        self.val_annos = self._load_annotation_records(self.query_anno_path)
+
         self.train, self.train_id_container = self._process_split(
             img_dir=self.train_dir,
             anno_path=self.train_anno_path,
@@ -67,7 +72,6 @@ class Market1501(BaseDataset):
             relabel=False
         )
 
-        # Optional aliases if some other code wants query/gallery names
         self.query = self.val
         self.gallery = self.test
 
