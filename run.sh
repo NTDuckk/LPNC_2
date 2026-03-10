@@ -15,7 +15,6 @@ python train.py \
 --name LPNC \
 --output_dir 'LPNC_log' \
 --dataset_name $DATASET_NAME \
---root_dir $ROOT_DIR \
 --loss_names 'supid+cotrl+cid' \
 --batch_size 64 \
 --accumulation_steps 8 \
