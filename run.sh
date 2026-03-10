@@ -1,5 +1,4 @@
-DATASET_NAME="Market1501"
-ROOT_DIR="data"  # expects data/Market-1501-v15.09.15
+DATASET_NAME="Market1501" # expects data/Market-1501-v15.09.15
 
 # CUDA_VISIBLE_DEVICES=0 \
 # python train.py \
