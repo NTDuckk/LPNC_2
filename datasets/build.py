@@ -12,11 +12,13 @@ from .bases import ImageDataset, TextDataset, ImageTextDataset
 from .cuhkpedes import CUHKPEDES
 from .icfgpedes import ICFGPEDES
 from .rstpreid import RSTPReid
+from .market1501 import Market1501
 
-__factory = {'CUHK-PEDES': CUHKPEDES, 'ICFG-PEDES': ICFGPEDES, 'RSTPReid': RSTPReid}
+__factory = {'CUHK-PEDES': CUHKPEDES, 'ICFG-PEDES': ICFGPEDES, 'RSTPReid': RSTPReid, 'Market1501': Market1501}
 
 
-def build_transforms(img_size=(384, 128), aug=False, is_train=True):
+def build_transforms(img_size=(384, 128), aug=False, is_train=True,
+                     flip_prob=0.5, pad_size=10, re_prob=0.5):
     height, width = img_size
 
     mean = [0.48145466, 0.4578275, 0.40821073]
@@ -34,17 +36,17 @@ def build_transforms(img_size=(384, 128), aug=False, is_train=True):
     if aug:
         transform = T.Compose([
             T.Resize((height, width)),
-            T.RandomHorizontalFlip(0.5),
-            T.Pad(10),
+            T.RandomHorizontalFlip(flip_prob),
+            T.Pad(pad_size),
             T.RandomCrop((height, width)),
             T.ToTensor(),
             T.Normalize(mean=mean, std=std),
-            T.RandomErasing(scale=(0.02, 0.4), value=mean),
+            T.RandomErasing(p=re_prob, scale=(0.02, 0.4), value=mean),
         ])
     else:
         transform = T.Compose([
             T.Resize((height, width)),
-            T.RandomHorizontalFlip(0.5),
+            T.RandomHorizontalFlip(flip_prob),
             T.ToTensor(),
             T.Normalize(mean=mean, std=std),
         ])
@@ -99,7 +101,10 @@ def build_dataloader(args, tranforms=None):
     if args.training:
         train_transforms = build_transforms(img_size=args.img_size,
                                             aug=args.img_aug,
-                                            is_train=True)
+                                            is_train=True,
+                                            flip_prob=args.flip_prob,
+                                            pad_size=args.pad_size,
+                                            re_prob=args.re_prob)
         val_transforms = build_transforms(img_size=args.img_size,
                                           is_train=False)
 

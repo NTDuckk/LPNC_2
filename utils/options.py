@@ -38,8 +38,14 @@ def get_args():
     parser.add_argument("--loss_names", default='supid+cotrl+cid', help="which loss to use ['mlm', 'cmpm', 'id', 'itc', 'sdm']")
 
     ######################## vison trainsformer settings ########################
-    parser.add_argument("--img_size", type=tuple, default=(384, 128))
+    # parser.add_argument("--img_size", type=tuple, default=(384, 128))
+    parser.add_argument("--img_size", type=tuple, default=(256, 128))
     parser.add_argument("--stride_size", type=int, default=16)
+
+    ######################## data preprocessing ########################
+    parser.add_argument("--flip_prob", type=float, default=0.5, help="random horizontal flip probability")
+    parser.add_argument("--pad_size", type=int, default=10, help="padding size before random crop")
+    parser.add_argument("--re_prob", type=float, default=0.5, help="random erasing probability")
 
     ######################## text transformer settings ########################
     parser.add_argument("--text_length", type=int, default=77)
@@ -68,10 +74,12 @@ def get_args():
     
     parser.add_argument("--accumulation_steps", type=int, default=8, help="Number of steps to accumulate gradients")
     ######################## dataset ########################
-    parser.add_argument("--dataset_name", default="CUHK-PEDES", help="[CUHK-PEDES, ICFG-PEDES, RSTPReid]")
+    # parser.add_argument("--dataset_name", default="CUHK-PEDES", help="[CUHK-PEDES, ICFG-PEDES, RSTPReid]")
+    parser.add_argument("--dataset_name", default="Market1501", help="[CUHK-PEDES, ICFG-PEDES, RSTPReid, Market1501]")
     parser.add_argument("--sampler", default="identity", help="choose sampler from [identity, random]")
     parser.add_argument("--num_instance", type=int, default=2)
-    parser.add_argument("--root_dir", default="datasets/dataset")
+    # parser.add_argument("--root_dir", default="datasets/dataset")
+    parser.add_argument("--root_dir", default="data")  # Market1501: data/Market-1501-v15.09.15
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--test_batch_size", type=int, default=512)
     parser.add_argument("--num_workers", type=int, default=4)
