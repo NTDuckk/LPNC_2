@@ -37,6 +37,13 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
     # Khởi tạo GradScaler cho mixed precision
     scaler = GradScaler()
 
+    def _optimizer_has_grad(opt):
+        for g in opt.param_groups:
+            for p in g['params']:
+                if p.grad is not None:
+                    return True
+        return False
+
     for epoch in range(start_epoch, num_epoch + 1):
         start_time = time.time()
         for meter in meters.values():
@@ -69,9 +76,19 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
 
             # Cập nhật tham số sau mỗi accumulation_steps batch
             if (n_iter + 1) % accumulation_steps == 0:
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
+                # If there are no gradients (possible with some accumulation setups), skip stepping
+                if not _optimizer_has_grad(optimizer):
+                    logger.warning("No gradients detected for optimizer; skipping step")
+                    optimizer.zero_grad()
+                else:
+                    # Ensure gradients are unscaled so GradScaler records inf/NaN checks
+                    try:
+                        scaler.unscale_(optimizer)
+                    except Exception:
+                        pass
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
 
                 # Có thể cập nhật scheduler ở đây nếu dùng step-based scheduler
                 # scheduler.step()
@@ -94,9 +111,17 @@ def do_train(start_epoch, args, model, train_loader, evaluator, optimizer,
 
         # Sau epoch, nếu còn gradient chưa được cập nhật thì cập nhật
         if len(train_loader) % accumulation_steps != 0:
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
+            if not _optimizer_has_grad(optimizer):
+                logger.warning("No gradients detected for optimizer at epoch end; skipping step")
+                optimizer.zero_grad()
+            else:
+                try:
+                    scaler.unscale_(optimizer)
+                except Exception:
+                    pass
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
 
         # Ghi log lên tensorboard
         tb_writer.add_scalar('lr', scheduler.get_lr()[0], epoch)
