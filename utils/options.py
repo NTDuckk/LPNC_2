@@ -79,7 +79,7 @@ def get_args():
     parser.add_argument("--sampler", default="identity", help="choose sampler from [identity, random]")
     parser.add_argument("--num_instance", type=int, default=2)
     # parser.add_argument("--root_dir", default="datasets/dataset")
-    parser.add_argument("--root_dir", default="data")  # Market1501: data/Market-1501-v15.09.15
+    parser.add_argument("--root_dir", default="datasets/dataset")  # Market1501: data/Market-1501-v15.09.15
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--test_batch_size", type=int, default=512)
     parser.add_argument("--num_workers", type=int, default=4)
